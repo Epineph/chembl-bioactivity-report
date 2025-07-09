@@ -1,0 +1,3 @@
+chembl-webresource-client
+pandas
+tabulate

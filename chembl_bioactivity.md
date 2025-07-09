@@ -1,20 +1,26 @@
 # %% [markdown]
+
 # notebook to fetch pharmacodynamic bioactivity of compounds
+
 Neat ChEMBL Bioactivity Report
+
 - **Fetch pharmacodynamic bioactivity**
 - Pulls all human bioactivities (*IC50*, *Ki*, *KA*, etc.) for a given compound.
 - Looks up each target’s *preferred name*.
-- **Builds a DataFrame and prints it as a pretty GitHub‑style Markdown table**
-  when run in a terminal, or as an HTML table in Jupyter.
-- When run from terminal, if using linux, make sure the script is executable by:
-sudo chmod +x chembl_bioactivity.py
-anr run from terminal:
+- **Builds a DataFrame and prints it as a pretty GitHub‑style Markdown table** when run
+  in a terminal, or as an HTML table in Jupyter.
+- When run from terminal, if using linux, make sure the script is executable by: sudo
+  chmod +x chembl_bioactivity.py anr run from terminal:
 - python chembl_bioactivity.py <compound>
----
+
+______________________________________________________________________
 
 # %% [markdown]
+
 ## 2) Install the required libraries
+
 The notebook **requires the following libraries:**
+
 - chembl-webresource-client
 - pandas
 - tabulate
@@ -32,24 +38,30 @@ or run clone the repository and run:
 python -m pip install -r requirements.txt
 
 # %% [markdown]
+
 ## 3) Imports & Setup
+
 ```python
 import sys
 import pandas as pd
 from chembl_webresource_client.new_client import new_client
 from tabulate import tabulate
 ```
----
+
+______________________________________________________________________
 
 # %% [markdown]
+
 ## 4) Pass compount name to function
 
 Pass a string to to the function get_chembl_id, e.g.,
 
-def get_chembl_id(compound: str = 'scopolamine') -> str:
+def get_chembl_id(compound: Literal['scopolamine']) -> str:
 
 ```python
-def get_chembl_id(compound: str) -> str:
+from typing import Literal
+
+def get_chembl_id(compound: Literal['aspirin']) -> str:
     """Lookup compound by preferred name in ChEMBL."""
     mol_client = new_client.molecule
     # Use the passed-in compound string, not a hard-coded value
@@ -59,7 +71,7 @@ def get_chembl_id(compound: str) -> str:
     return res[0]['molecule_chembl_id']
 ```
 
----
+______________________________________________________________________
 
 ```python
 def fetch_activities(chembl_id: str) -> list[dict]:
@@ -77,7 +89,7 @@ def fetch_activities(chembl_id: str) -> list[dict]:
     return list(acts)
 ```
 
----
+______________________________________________________________________
 
 ```python
 def fetch_target_names(target_ids: set[str]) -> dict[str, str]:
@@ -90,7 +102,7 @@ def fetch_target_names(target_ids: set[str]) -> dict[str, str]:
     return names
 ```
 
----
+______________________________________________________________________
 
 ```python
 def build_activity_df(acts: list[dict]) -> pd.DataFrame:
@@ -128,7 +140,7 @@ def build_activity_df(acts: list[dict]) -> pd.DataFrame:
     return df
 ```
 
----
+______________________________________________________________________
 
 ```python
 def display_df(df: pd.DataFrame):
@@ -146,7 +158,7 @@ def display_df(df: pd.DataFrame):
         print(tabulate(df, headers='keys', tablefmt='github', showindex=False))
 ```
 
----
+______________________________________________________________________
 
 ```python
 def display_df(df: pd.DataFrame):
@@ -164,7 +176,7 @@ def display_df(df: pd.DataFrame):
         print(tabulate(df, headers='keys', tablefmt='github', showindex=False))
 ```
 
----
+______________________________________________________________________
 
 ```python
 def main():
@@ -184,7 +196,19 @@ if __name__ == '__main__':  # pragma: no cover
     main()
 ```
 
----
+______________________________________________________________________
 
+# 🧪 Neat ChEMBL Bioactivity Report (Fixed)
 
+**Help**
 
+- Pulls all human bioactivities (IC50, Ki, KA, etc.) for a given compound.
+- Looks up each target’s preferred name.
+- Builds a DataFrame and prints it as a pretty GitHub-style Markdown table\
+  when run in a terminal, or as an HTML table in Jupyter.
+
+**Usage**
+
+```bash
+python chembl_bioactivity_fixed.py <compound>
+```

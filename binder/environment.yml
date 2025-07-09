@@ -1,0 +1,8 @@
+name: chembl-report
+channels:
+  - conda-forge
+dependencies:
+  - python=3.13.0
+  - chembl-webresource-client
+  - pandas
+  - tabulate
