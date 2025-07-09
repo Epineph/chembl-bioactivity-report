@@ -3,6 +3,7 @@ channels:
   - conda-forge
 dependencies:
   - python=3.8.12
+  - pip
   - chembl-webresource-client
   - pandas
   - tabulate
