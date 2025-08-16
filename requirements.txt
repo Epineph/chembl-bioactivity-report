@@ -1,3 +1,6 @@
 chembl-webresource-client
 pandas
 tabulate
+voila
+ipywidgets
+

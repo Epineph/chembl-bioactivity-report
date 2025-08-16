@@ -2,9 +2,10 @@ name: chembl-report
 channels:
   - conda-forge
 dependencies:
-  - python=3.8.12
+    - python=3.9
     - pip:
-    - chembl-webresource-client
-  - chembl-webresource-client
-  - pandas
-  - tabulate
+      - chembl-webresource-client
+      - pandas
+      - tabulate
+      - voila
+      - ipywidgets
