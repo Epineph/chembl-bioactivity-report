@@ -1,10 +1,4 @@
 #!/usr/bin/env python
-# coding: utf-8
-
-# In[4]:
-
-
-#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Neat ChEMBL Bioactivity Report (Jupyter Enhanced with Aggregation)
