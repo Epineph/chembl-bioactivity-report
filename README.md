@@ -1,6 +1,6 @@
 # Chembl Bioactivity Report
 
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main)
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/HEAD?urlpath=voila/render/chembl_bioactivity.ipynb)
 
 <!-- H1 title; two spaces at end ⇒ hard line break for subtitle -->
 
