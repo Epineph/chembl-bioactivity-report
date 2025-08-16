@@ -6,7 +6,7 @@
 
 **Neatly fetch human bioactivity (IC₅₀, Kᵢ, Kₐ, …) from ChEMBL and render as a
 GitHub‐style table.**\
-[![Python ≥3.8](https://img.shields.io/badge/python-3.8%2B-blue)](https://www.python.org/)\
+[![Python ≥3.9](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)\
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
 ______________________________________________________________________
@@ -21,5 +21,5 @@ ______________________________________________________________________
 ## ⚙️ Installation
 
 ```bash
-pip install chembl-webresource-client pandas tabulate
+pip install chembl-webresource-client pandas tabulate voila 
 ```
