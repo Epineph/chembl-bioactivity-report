@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+# coding: utf-8
+
+# In[2]:
+
+
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Neat ChEMBL Bioactivity Report (Jupyter Enhanced with Aggregation)
@@ -185,6 +191,9 @@ def main():
 
 if __name__ == '__main__':  # pragma: no cover
     main()
+
+
+# In[ ]:
 
 
 

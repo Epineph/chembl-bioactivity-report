@@ -1,4 +1,10 @@
 #!/usr/bin/env python
+# coding: utf-8
+
+# In[4]:
+
+
+#!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
 Neat ChEMBL Bioactivity Report (Jupyter Enhanced with Aggregation)
@@ -129,44 +135,69 @@ def display_df(df: pd.DataFrame):
         print(tabulate(df, headers='keys', tablefmt='github', showindex=False))
 
 
+import ipywidgets as widgets
+from IPython.display import display, clear_output, Markdown
+
 def interactive_mode():
-    """Interactive widget for JupyterLab."""
-    try:
-        import ipywidgets as widgets
-        from IPython.display import display, clear_output
+    text = widgets.Text(
+        value='scopolamine',
+        description='Compound:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='400px')
+    )
+    button = widgets.Button(description="Search")
+    filter_box = widgets.SelectMultiple(
+        options=['IC50', 'Ki', 'KA', 'Kd'],
+        value=['IC50', 'Ki'],  # default
+        description='Activity filter',
+        layout=widgets.Layout(width='200px')
+    )
+    export_button = widgets.Button(description="Export CSV")
+    output = widgets.Output()
 
-        text = widgets.Text(
-            value='scopolamine',
-            description='Compound:',
-            style={'description_width': 'initial'},
-            layout=widgets.Layout(width='400px')
-        )
-        button = widgets.Button(description="Search")
-        output = widgets.Output()
+    def on_click(b):
+        with output:
+            clear_output()
+            try:
+                compound = text.value
+                print(f"\n🔍 Looking up '{compound}' in ChEMBL…")
+                chembl_id = get_chembl_id(compound)
+                print(f"   → Found ChEMBL ID: {chembl_id}\n")
 
-        def on_click(b):
-            with output:
-                clear_output()
-                try:
-                    compound = text.value
-                    print(f"\n🔍 Looking up '{compound}' in ChEMBL…")
-                    chembl_id = get_chembl_id(compound)
-                    print(f"   → Found ChEMBL ID: {chembl_id}\n")
+                acts = fetch_activities(chembl_id)
+                df = build_activity_df(acts)
 
-                    print("📋 Fetching human bioactivities…")
-                    acts = fetch_activities(chembl_id)
-                    df = build_activity_df(acts)
-                    print(f"\n🏷  Retrieved {len(df)} aggregated records:")
-                    display_df(df)
-                except Exception as e:
-                    print(f"❌ Error: {e}")
+                # Apply filter
+                selected = list(filter_box.value)
+                if selected:
+                    df = df[df["Activity"].isin(selected)]
 
-        button.on_click(on_click)
-        display(widgets.VBox([text, button, output]))
-    except ImportError:
-        print("ipywidgets is not installed. Run: pip install ipywidgets")
+                # Show explanatory markdown
+                display(Markdown(f"""
+                ### Results for **{compound}**  
+                Data retrieved from [ChEMBL](https://www.ebi.ac.uk/chembl/).  
+                Values are aggregated (median per target/activity).  
+                """))
 
+                # Show table
+                from itables import show
+                show(df, classes="display compact cell-border", maxBytes=0)
 
+                # Attach df to export button
+                export_button.df = df
+
+            except Exception as e:
+                print(f"❌ Error: {e}")
+
+    def on_export(b):
+        if hasattr(b, "df"):
+            b.df.to_csv("results.csv", index=False)
+            print("✅ Exported to results.csv")
+
+    button.on_click(on_click)
+    export_button.on_click(on_export)
+
+    display(widgets.VBox([text, button, filter_box, export_button, output]))
 def main():
     if 'ipykernel' in sys.modules:
         interactive_mode()
@@ -185,6 +216,9 @@ def main():
 
 if __name__ == '__main__':  # pragma: no cover
     main()
+
+
+# In[ ]:
 
 
 
