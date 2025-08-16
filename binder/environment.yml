@@ -9,4 +9,3 @@ dependencies:
       - tabulate
       - voila
       - ipywidgets
-      - itables

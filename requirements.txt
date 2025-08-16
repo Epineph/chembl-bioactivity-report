@@ -3,4 +3,4 @@ pandas
 tabulate
 voila
 ipywidgets
-itables
+
