@@ -1,3 +1,4 @@
+# binder/environment.yml
 name: chembl-report
 channels:
   - conda-forge
@@ -11,3 +12,5 @@ dependencies:
       - voila
       - ipywidgets
       - itables
+      - openpyxl   # for Excel export (.xlsx)
+
