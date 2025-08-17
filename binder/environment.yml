@@ -13,4 +13,3 @@ dependencies:
       - ipywidgets
       - itables
       - openpyxl   # for Excel export (.xlsx)
-

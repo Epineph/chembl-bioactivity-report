@@ -1,6 +1,8 @@
 # Chembl Bioactivity Report
 
+
 [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/HEAD?urlpath=voila/render/chembl_bioactivity.ipynb)
+
 
 <!-- H1 title; two spaces at end ⇒ hard line break for subtitle -->
 
@@ -21,5 +23,16 @@ ______________________________________________________________________
 ## ⚙️ Installation
 
 ```bash
-pip install chembl-webresource-client pandas tabulate voila 
+pip install chembl-webresource-client pandas tabulate voila openpyxl
+```
+
+Some users may have to include *python* or *python3* in the command, so:
+
+
+```bash
+python -m pip install chembl-webresource-client pandas tabulate voila openpyxl
+
+# Or:
+
+python3 -m pip install chembl-webresource-client pandas tabulate voila openpyxl
 ```
