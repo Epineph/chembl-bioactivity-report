@@ -4,3 +4,4 @@ tabulate
 voila
 ipywidgets
 itables
+openpyxl
