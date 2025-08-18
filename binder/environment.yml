@@ -3,7 +3,7 @@ name: chembl-report
 channels:
   - conda-forge
 dependencies:
-  - python=3.11
+  - python=3.9
   - rdkit>=2024.03      # compiled against NumPy 2.x on conda-forge
   - numpy>=2.0
   - pandas>=2.1
