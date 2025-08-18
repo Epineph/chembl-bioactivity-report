@@ -21,18 +21,47 @@ ______________________________________________________________________
 - **Render** as Markdown table (CLI) or HTML (Jupyter)
 
 ## ⚙️ Installation
+ 
+### Create a virtual environment
+
+You can use any name for your virtual environment, below chembl-bioactivity is used as an example.
 
 ```bash
-pip install chembl-webresource-client pandas tabulate voila openpyxl
+# Create a fresh environment dedicated to this workflow
+mamba create -n chembl-bioactivity -c conda-forge \
+  python=3.11 \
+  "numpy<2" \
+  rdkit \
+  chembl-webresource-client pandas tabulate ipywidgets itables openpyxl \
+  requests pubchempy py3Dmol pillow -y
+
+# Register a Jupyter kernel for the new env
+micromamba activate chembl-bioactivity
+python -m ipykernel install --user --name chembl-bioactivity --display-name "Python (chembl-bioactivity)"
+
 ```
 
-Some users may have to include *python* or *python3* in the command, so:
+### Install some dependencies
+
+```bash
+python -m pip install rdkit numpy pandas jupyterlab ipykernel ipywidgets itables pillow openpyxl voila
+# If using mamba or conda rather than micromamba, use that instead
+# Alternatively, use pip to install all the packages
+micromamba install -c conda-forge chembl-webresource-client pubchempy py3Dmol tabulate
+
+```
+
+Some users may have to include *python3* instead of *python* in the command, so:
 
 
 ```bash
-python -m pip install chembl-webresource-client pandas tabulate voila openpyxl
-
-# Or:
-
-python3 -m pip install chembl-webresource-client pandas tabulate voila openpyxl
+python3 -m pip install rdkit numpy pandas jupyterlab ipykernel ipywidgets itables pillow openpyxl voila chembl-webresource-client pubchempy py3Dmol tabulate
 ```
+
+Then just launch jupyter lab (or use the binder badge above) locally:
+
+```bash
+jupyter lab
+```
+
+And open the *chembl_bioactivity.ipynb* file from your browser.

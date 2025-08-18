@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Make sure the kernel name exists and matches "python3" (Voila defaults)
+python -m ipykernel install --name=python3 --display-name "Python (chembl-report)" --sys-prefix
+
+# ipywidgets: with JupyterLab 3+/ipywidgets 8 this is usually not needed,
+# but enabling the classic nbextension helps Voilà in some images.
+jupyter nbextension enable --py widgetsnbextension --sys-prefix || true
+
