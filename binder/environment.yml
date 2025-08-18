@@ -1,18 +1,18 @@
-# binder/environment.yml
+# binder/environment.yml (Option A: modern stack)
 name: chembl-report
 channels:
   - conda-forge
 dependencies:
-  - python=3.9
-  - rdkit>=2024.03      # compiled against NumPy 2.x on conda-forge
+  - python=3.11
+  - rdkit>=2024.03
   - numpy>=2.0
   - pandas>=2.1
   - jupyterlab>=4
   - ipykernel
   - ipywidgets>=8
   - itables>=2.0
-  - pillow              # RDKit 2D drawing backend
-  - openpyxl            # Excel export
+  - pillow
+  - openpyxl
   - voila>=0.5
   - pip
   - pip:
