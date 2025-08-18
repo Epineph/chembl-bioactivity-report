@@ -144,7 +144,3 @@ def interactive_mode():
     ]))
 
 interactive_mode()
-
-
-
-
