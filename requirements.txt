@@ -5,3 +5,7 @@ voila
 ipywidgets
 itables
 openpyxl
+requests 
+pubchempy 
+py3Dmol
+rdkit-pypi

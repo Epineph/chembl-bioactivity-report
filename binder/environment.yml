@@ -4,12 +4,19 @@ channels:
   - conda-forge
 dependencies:
   - python=3.9
+  - rdkit>=2024.03     # conda-forge build compiled against NumPy 2
+  - numpy>=2.0
+  - pandas>=2.1
+  - jupyterlab>=4
+  - ipykernel
+  - ipywidgets>=8
+  - itables>=2
+  - pillow            # RDKit 2D drawing backend
+  - openpyxl          # Excel export
   - pip
   - pip:
-      - chembl-webresource-client
-      - pandas
-      - tabulate
-      - voila
-      - ipywidgets
-      - itables
-      - openpyxl   # for Excel export (.xlsx)
+      - chembl-webresource-client>=0.10
+      - pubchempy>=1.0.4
+      - py3Dmol>=2.0
+      - voila>=0.5
+      - tabulate>=0.9
