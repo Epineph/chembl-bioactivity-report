@@ -28,7 +28,7 @@ You can use any name for your virtual environment, below chembl-bioactivity is u
 
 ```bash
 # Create a fresh environment dedicated to this workflow
-mamba create -n chembl-bioactivity -c conda-forge \
+micromamba create -n chembl-bioactivity -c conda-forge \
   python=3.11 \
   "numpy<2" \
   rdkit \
