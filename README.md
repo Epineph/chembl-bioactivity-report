@@ -3,7 +3,7 @@
 
 
 [![Binder](https://mybinder.org/badge_logo.svg)](
-  https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl_bioactivity_integrated.ipynb
+  https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb
 )
 
 
