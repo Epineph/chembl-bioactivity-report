@@ -20,9 +20,10 @@ tab-separated).
 </p>
 
 <div align="center">
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb)
-</div>
 
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb)
+
+</div>
 <!-- H1 title; two spaces at end ⇒ hard line break for subtitle -->
 
 **Neatly fetch human bioactivity (IC₅₀, Kᵢ, Kₐ, …) from ChEMBL and render as a GitHub‐style table.**\
