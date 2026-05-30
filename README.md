@@ -26,8 +26,6 @@ tab-separated).
 </p>
 <!-- [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb)-->
 
-
-**Neatly fetch human bioactivity (IC₅₀, Kᵢ, Kₐ, …) from ChEMBL and render as a GitHub‐style table.**\
 [![Python ≥3.9](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)\
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
