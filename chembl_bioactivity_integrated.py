@@ -16,6 +16,7 @@
 # * Experimental properties are heterogeneous; availability varies.
 # * This cell only builds the UI; no network calls occur until you press "Search".
 
+from chembl_bioactivity_enhanced import clean_activity_df, filter_by_threshold, pk_profile_for_compound
 import io, base64, json, re, requests, contextlib, warnings, time, unicodedata
 from urllib.parse import quote
 import pandas as pd

@@ -1,5 +1,10 @@
 # Chembl Bioactivity Report
 
+## Run it in your browser
+
+Press on the icon below - **_Launch Binder_** to run the script online in your browser and investigate the pharmacodynamic action of the molecule of your interest. Sources, official and reliable, are listed both in the rendered script and visible in the raw code on github. You do not need to **download anything to use the script!**. 
+
+Results are, in addition to being shown as you search for a given molecule in a table, available to download as *Excel* files, i.e., **.xlsx** format or *comma-seperated values*, i.e., **.csv** file (you can also choose to get the file as *semi-colon* (**;**) seperated values or *tab* (**/t**) seperated values if needed if you need it for a script that uses that).
 
 
 [![Binder](https://mybinder.org/badge_logo.svg)](
