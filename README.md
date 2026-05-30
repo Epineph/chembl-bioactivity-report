@@ -19,12 +19,13 @@ tab-separated).
 
 </p>
 
-<div align="center">
+<p align="center">
+  <a href="https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb">
+    <img src="https://mybinder.org/badge_logo.svg" alt="Launch Binder">
+  </a>
+</p>
+<!-- [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb)-->
 
-[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb)
-
-</div>
-<!-- H1 title; two spaces at end ⇒ hard line break for subtitle -->
 
 **Neatly fetch human bioactivity (IC₅₀, Kᵢ, Kₐ, …) from ChEMBL and render as a GitHub‐style table.**\
 [![Python ≥3.9](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)\
