@@ -20,7 +20,7 @@ tab-separated).
 </p>
 
 <p align="center">
-  <a href="https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb">
+  <a href="https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb">
     <img src="https://mybinder.org/badge_logo.svg" alt="Launch Binder">
   </a>
 </p>
