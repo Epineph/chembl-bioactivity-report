@@ -2,34 +2,44 @@
 
 ## Run it in your browser
 
-Press on the icon below - **_Launch Binder_** to run the script online in your browser and investigate the pharmacodynamic action of the molecule of your interest. Sources, official and reliable, are listed both in the rendered script and visible in the raw code on github. You do not need to **download anything to use the script!**. 
+Click the **Launch Binder** badge below to run the notebook online in your
+browser and investigate the pharmacodynamic activity of a molecule of interest.
 
-Results are, in addition to being shown as you search for a given molecule in a table, available to download as *Excel* files, i.e., **.xlsx** format or *comma-seperated values*, i.e., **.csv** file (you can also choose to get the file as *semi-colon* (**;**) seperated values or *tab* (**/t**) seperated values if needed if you need it for a script that uses that).
+The data sources are official and reliable. They are listed in both the rendered
+notebook and the source code available in this repository. You do **not** need
+to download or install anything to use the notebook.
 
+Results are displayed in an interactive table and can also be downloaded as
+Excel files (`.xlsx`) or delimited text files (`.csv`, semicolon-separated, or
+tab-separated).
 
-[![Binder](https://mybinder.org/badge_logo.svg)](
-  https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb
-)
+<p align="center">
+  <strong>Launch Binder</strong><br>
+  ⬇️<br>
 
+</p>
+
+<div align="center">
+[![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb)
+</div>
 
 <!-- H1 title; two spaces at end ⇒ hard line break for subtitle -->
 
-**Neatly fetch human bioactivity (IC₅₀, Kᵢ, Kₐ, …) from ChEMBL and render as a
-GitHub‐style table.**\
+**Neatly fetch human bioactivity (IC₅₀, Kᵢ, Kₐ, …) from ChEMBL and render as a GitHub‐style table.**\
 [![Python ≥3.9](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)\
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-______________________________________________________________________
+---
 
 ## 🚀 Features
 
 - **Lookup** by compound name (case-insensitive)
-- **Fetch** all *Homo sapiens* bioactivities
+- **Fetch** all _Homo sapiens_ bioactivities
 - **Compute** Kd (nM) for association constants
 - **Render** as Markdown table (CLI) or HTML (Jupyter)
 
 ## ⚙️ Installation
- 
+
 ### Create a virtual environment
 
 You can use any name for your virtual environment, below chembl-bioactivity is used as an example.
@@ -59,8 +69,7 @@ micromamba install -c conda-forge chembl-webresource-client pubchempy py3Dmol ta
 
 ```
 
-Some users may have to include *python3* instead of *python* in the command, so:
-
+Some users may have to include _python3_ instead of _python_ in the command, so:
 
 ```bash
 python3 -m pip install rdkit numpy pandas jupyterlab ipykernel ipywidgets itables pillow openpyxl voila chembl-webresource-client pubchempy py3Dmol tabulate
@@ -72,4 +81,4 @@ Then just launch jupyter lab (or use the binder badge above) locally:
 jupyter lab
 ```
 
-And open the *chembl_bioactivity.ipynb* file from your browser.
+And open the _chembl_bioactivity.ipynb_
