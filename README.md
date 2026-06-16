@@ -36,7 +36,35 @@ tab-separated).
 - **Lookup** by compound name (case-insensitive)
 - **Fetch** all _Homo sapiens_ bioactivities
 - **Compute** Kd (nM) for association constants
+- **Estimate** structure-based pharmacokinetics for compounds without clinical PK data
 - **Render** as Markdown table (CLI) or HTML (Jupyter)
+
+## Predicted Pharmacokinetics
+
+The app now adds a **Predicted Pharmacokinetics (structure-based)** table after
+PubChem descriptor lookup. It estimates oral absorption potential, oral
+bioavailability potential, BBB penetration tendency, volume of distribution,
+clearance, and terminal half-life from molecular descriptors such as MW, logP,
+TPSA, H-bond donors/acceptors, rotatable bonds, and formal charge.
+
+These are screening estimates for hypothesis generation, not clinical dosing or
+safety guidance. The most evidence-aligned pieces are descriptor rules such as
+Lipinski RO5, Veber oral exposure criteria, and the Clark-style logBB
+relationship using logP and polar surface area. Clearance and half-life are
+lower-confidence heuristics because accurate values usually require in vitro
+metabolism/transport data or human/animal PK observations.
+
+You can also call the estimator directly from Python:
+
+```python
+from chembl_bioactivity_enhanced import pk_profile_for_compound
+
+# PubChem CID
+df_pk = pk_profile_for_compound(3000322)
+
+# Or a SMILES string, if RDKit is installed
+df_pk = pk_profile_for_compound("CN1C(=O)N(C)c2ncn(C)c2C1=O")
+```
 
 ## ⚙️ Installation
 

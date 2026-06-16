@@ -8,6 +8,7 @@
 # - 2D structure (RDKit if available; else PubChem PNG)
 # - 3D interactive structure (py3Dmol; requires PubChem 3D)
 # - PubChem properties (robust walker for Experimental/Computed)
+# - Predicted pharmacokinetics from transparent structure-based heuristics
 # - Binder/Voila-hardened networking (UA + retries + TXT fallback)
 #
 # Notes
@@ -16,7 +17,7 @@
 # * Experimental properties are heterogeneous; availability varies.
 # * This cell only builds the UI; no network calls occur until you press "Search".
 
-from chembl_bioactivity_enhanced import clean_activity_df, filter_by_threshold, pk_profile_for_compound
+from chembl_bioactivity_enhanced import PK_ESTIMATE_NOTE, pk_profile_for_compound
 import io, base64, json, re, requests, contextlib, warnings, time, unicodedata
 from urllib.parse import quote
 import pandas as pd
@@ -514,7 +515,7 @@ def interactive_mode():
                 return
 
             display(Markdown(f"## Results for **{compound}**"))
-            display(Markdown("Data sources: **ChEMBL** (bioactivity), **PubChem** (structure & properties)."))
+            display(Markdown("Data sources: **ChEMBL** (bioactivity), **PubChem** (structure & properties), and transparent structure-based PK heuristics."))
 
             # --- ChEMBL PD table
             df_pd = pd.DataFrame()
@@ -557,7 +558,7 @@ def interactive_mode():
                 show(df_basic, classes="display compact cell-border", maxBytes=0, pageLength=50)
                 display(HTML(make_download_link(df_basic, "pubchem_basic.csv", "csv", sep=sep_choice.value)))
 
-            # 2D structure
+            # SMILES for RDKit rendering and predicted PK descriptors.
             smiles = None
             if _PCP:
                 try:
@@ -567,6 +568,15 @@ def interactive_mode():
                 except Exception:
                     smiles = None
 
+            display(Markdown("#### Predicted Pharmacokinetics (structure-based)"))
+            df_pk = pk_profile_for_compound(cid, smiles=smiles)
+            if not df_pk.empty:
+                show(df_pk, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                display(HTML(make_download_link(df_pk, "predicted_pharmacokinetics.csv", "csv", sep=sep_choice.value)))
+                display(HTML(make_download_link(df_pk, "predicted_pharmacokinetics.xlsx", "xlsx")))
+            display(Markdown(f"> {PK_ESTIMATE_NOTE}"))
+
+            # 2D structure
             display(Markdown("#### 2D Structure"))
             img = rdkit_image_from_smiles(smiles) if smiles else None
             if img is not None:
@@ -600,5 +610,5 @@ def interactive_mode():
     run_btn.on_click(on_click)
     display(widgets.VBox([controls, filters, out]))
 
-# Launch UI (Voila will execute the notebook top-down)
-interactive_mode()
+if __name__ == "__main__":
+    interactive_mode()
