@@ -21,12 +21,15 @@ from chembl_bioactivity_enhanced import (
     PK_ESTIMATE_NOTE,
     PK_SIMULATION_NOTE,
     active_metabolite_notes_for_compound,
+    build_interactive_html_report,
+    build_pdf_report,
     descriptors_from_pubchem_cid,
     estimate_exposure_thresholds,
     pk_estimate_formula_items,
     pk_formula_items,
     pk_profile_from_descriptors,
     predict_pk_from_descriptors,
+    report_row_limit,
     simulate_active_metabolite_curves,
     simulate_pk_curves,
 )
@@ -481,6 +484,32 @@ def make_download_link(df: pd.DataFrame, filename: str, filetype: str = "csv", s
     b64 = base64.b64encode(data.encode() if isinstance(data, str) else data).decode()
     return f'<a download="{filename}" href="data:{mime};base64,{b64}">⬇️ Download {filename}</a>'
 
+def make_blob_download_link(data: str | bytes, filename: str, mime: str, label: str | None = None) -> str:
+    payload = data.encode("utf-8") if isinstance(data, str) else data
+    if not payload:
+        return "<em>No data to download</em>"
+    b64 = base64.b64encode(payload).decode("ascii")
+    text = html.escape(label or f"Download {filename}")
+    safe_filename = html.escape(filename)
+    return f'<a download="{safe_filename}" href="data:{mime};base64,{b64}">{text}</a>'
+
+def safe_report_filename(compound: str, extension: str) -> str:
+    slug = re.sub(r"[^A-Za-z0-9._-]+", "_", compound or "compound").strip("_") or "compound"
+    return f"{slug}_chembl_pk_report.{extension}"
+
+def display_report_downloads(compound: str, sections: list[dict], row_limit):
+    if not sections:
+        return
+    title = f"ChEMBL Bioactivity and Predicted Pharmacokinetics: {compound}"
+    display(Markdown("#### Report Downloads"))
+    html_report = build_interactive_html_report(title, sections, row_limit=row_limit)
+    display(HTML(make_blob_download_link(html_report, safe_report_filename(compound, "html"), "text/html", "Download interactive HTML report")))
+    try:
+        pdf_report = build_pdf_report(title, sections, row_limit=row_limit)
+        display(HTML(make_blob_download_link(pdf_report, safe_report_filename(compound, "pdf"), "application/pdf", "Download PDF report")))
+    except Exception as e:
+        display(Markdown(f"> PDF report unavailable: {e}. The HTML report can still be printed or saved as PDF from the browser."))
+
 def value_from_property_df(df: pd.DataFrame, *property_names: str):
     if df is None or df.empty or "Property" not in df.columns or "Value" not in df.columns:
         return None
@@ -648,6 +677,13 @@ def interactive_mode():
         description='CSV separator:',
         layout=widgets.Layout(width='240px')
     )
+    report_rows = widgets.Dropdown(
+        options=[('10 rows', 10), ('25 rows', 25), ('50 rows', 50), ('100 rows', 100), ('All rows', 'all')],
+        value=50,
+        description='Report rows/table:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='240px')
+    )
     dose_amount = widgets.FloatText(
         value=10.0,
         description='Dose:',
@@ -746,7 +782,7 @@ def interactive_mode():
     out = widgets.Output()
 
     controls = widgets.HBox([text, run_btn])
-    filters  = widgets.HBox([act_filter, sort_col, sort_asc, sep_choice])
+    filters  = widgets.HBox([act_filter, sort_col, sort_asc, sep_choice, report_rows])
     pk_controls = widgets.VBox([
         widgets.HBox([dose_amount, dose_unit, body_weight, duration_input]),
         widgets.HBox([route_select, widgets.VBox([mec_input, mtc_input, injection_conc])]),
@@ -768,6 +804,9 @@ def interactive_mode():
 
             display(Markdown(f"## Results for **{compound}**"))
             display(Markdown("Data sources: **ChEMBL** (bioactivity), **PubChem** (structure & properties), and transparent structure-based PK heuristics."))
+            report_sections = []
+            report_limit = report_row_limit(report_rows.value)
+            datatable_page_length = -1 if report_limit is None else report_limit
 
             # --- ChEMBL PD table
             df_pd = pd.DataFrame()
@@ -783,7 +822,8 @@ def interactive_mode():
                     df_pd = sort_dataframe(df_pd, by=sort_col.value, ascending=sort_asc.value)
 
                     display(Markdown("### Pharmacodynamic Bioactivities (Homo sapiens)"))
-                    show(df_pd, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                    show(df_pd, classes="display compact cell-border", maxBytes=0, pageLength=datatable_page_length)
+                    report_sections.append({"title": "Pharmacodynamic Bioactivities (Homo sapiens)", "df": df_pd})
 
                     display(HTML(make_download_link(df_pd, "bioactivity.csv", "csv", sep=sep_choice.value)))
                     display(HTML(make_download_link(df_pd, "bioactivity.xlsx", "xlsx")))
@@ -801,13 +841,15 @@ def interactive_mode():
 
             if cid is None:
                 display(Markdown("> PubChem lookup failed; structure/properties unavailable."))
+                display_report_downloads(compound, report_sections, report_rows.value)
                 return
 
             display(Markdown(f"### PubChem\nCID: **{cid}**"))
 
             df_basic = pubchem_basic_props_df(cid)
             if not df_basic.empty:
-                show(df_basic, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                show(df_basic, classes="display compact cell-border", maxBytes=0, pageLength=datatable_page_length)
+                report_sections.append({"title": "PubChem Basic Properties", "df": df_basic})
                 display(HTML(make_download_link(df_basic, "pubchem_basic.csv", "csv", sep=sep_choice.value)))
 
             # SMILES for RDKit rendering and predicted PK descriptors. Avoid deprecated PubChemPy accessors.
@@ -827,7 +869,8 @@ def interactive_mode():
             display(Markdown("#### Predicted Pharmacokinetics (structure-based)"))
             df_pk = pk_profile_from_descriptors(descriptors, label=f"PubChem CID {cid}")
             if not df_pk.empty:
-                show(df_pk, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                show(df_pk, classes="display compact cell-border", maxBytes=0, pageLength=datatable_page_length)
+                report_sections.append({"title": "Predicted Pharmacokinetics (structure-based)", "df": df_pk, "note": PK_ESTIMATE_NOTE})
                 display(HTML(make_download_link(df_pk, "predicted_pharmacokinetics.csv", "csv", sep=sep_choice.value)))
                 display(HTML(make_download_link(df_pk, "predicted_pharmacokinetics.xlsx", "xlsx")))
             display(Markdown(f"> {PK_ESTIMATE_NOTE}"))
@@ -856,7 +899,8 @@ def interactive_mode():
                             if col in threshold_display.columns:
                                 threshold_display[col] = pd.to_numeric(threshold_display[col], errors="coerce").round(4)
                         display(Markdown("##### Estimated MEC/MTC From Reference Dose"))
-                        show(threshold_display, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                        show(threshold_display, classes="display compact cell-border", maxBytes=0, pageLength=datatable_page_length)
+                        report_sections.append({"title": "Estimated MEC/MTC From Reference Dose", "df": threshold_display})
                     if mec_input.value and mec_input.value > 0:
                         display(Markdown(f"> Using manually entered MEC: **{mec:.4g} mg/L**."))
                     elif estimated_mec is not None:
@@ -885,7 +929,8 @@ def interactive_mode():
 
                     sim_display = format_pk_simulation_summary(sim_summary)
                     if not sim_display.empty:
-                        show(sim_display, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                        show(sim_display, classes="display compact cell-border", maxBytes=0, pageLength=datatable_page_length)
+                        report_sections.append({"title": "Dose and Route Simulation Summary", "df": sim_display, "note": PK_SIMULATION_NOTE})
                         display(HTML(make_download_link(sim_display, "pk_simulation_summary.csv", "csv", sep=sep_choice.value)))
                         display(HTML(make_download_link(curve_df, "pk_concentration_curve.csv", "csv", sep=sep_choice.value)))
                     if mec is None:
@@ -911,7 +956,8 @@ def interactive_mode():
                             metabolite_display = metabolite_summary_df.copy()
                             for col in ["Formation fraction", "Metabolite half-life (h)", "Relative potency vs parent", "Peak active-moiety index", "Peak time (h)"]:
                                 metabolite_display[col] = pd.to_numeric(metabolite_display[col], errors="coerce").round(4)
-                            show(metabolite_display, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                            show(metabolite_display, classes="display compact cell-border", maxBytes=0, pageLength=datatable_page_length)
+                            report_sections.append({"title": "Active Metabolite / Active-Moiety Summary", "df": metabolite_display})
                             display(HTML(make_download_link(metabolite_display, "active_metabolite_summary.csv", "csv", sep=sep_choice.value)))
                             display(HTML(make_download_link(metabolite_curve_df, "active_metabolite_curve.csv", "csv", sep=sep_choice.value)))
                 except Exception as e:
@@ -919,7 +965,8 @@ def interactive_mode():
 
             display(Markdown("#### Active Metabolite / Prodrug Caveat"))
             df_metabolite = active_metabolite_notes_for_compound(compound)
-            show(df_metabolite, classes="display compact cell-border", maxBytes=0, pageLength=50)
+            show(df_metabolite, classes="display compact cell-border", maxBytes=0, pageLength=datatable_page_length)
+            report_sections.append({"title": "Active Metabolite / Prodrug Caveat", "df": df_metabolite})
 
             # 2D structure
             display(Markdown("#### 2D Structure"))
@@ -950,13 +997,16 @@ def interactive_mode():
                 display(Markdown("#### Experimental / Computed Properties (PubChem)"))
                 df_exp = pubchem_experimental_props_df(cid)
                 if not df_exp.empty:
-                    show(df_exp, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                    show(df_exp, classes="display compact cell-border", maxBytes=0, pageLength=datatable_page_length)
+                    report_sections.append({"title": "Experimental / Computed Properties (PubChem)", "df": df_exp})
                     display(HTML(make_download_link(df_exp, "pubchem_properties.csv", "csv", sep=sep_choice.value)))
                     display(HTML(make_download_link(df_exp, "pubchem_properties.xlsx", "xlsx")))
                 else:
                     display(Markdown("> No experimental/computed properties found (or parse failed)."))
             else:
                 display(Markdown("> Full PubChem property scrape skipped. Enable **Fetch full PubChem properties (slower)** to retrieve it."))
+
+            display_report_downloads(compound, report_sections, report_rows.value)
 
     run_btn.on_click(on_click)
     display(widgets.VBox([controls, filters, pk_controls, out]))

@@ -12,5 +12,6 @@ pubchempy
 py3Dmol
 rdkit
 requests
+reportlab
 tabulate
 voila

@@ -8,6 +8,8 @@ trial data while still making the uncertainty visible.
 
 from __future__ import annotations
 
+import html
+import io
 import math
 from typing import Any
 
@@ -1168,3 +1170,164 @@ def pk_profile_for_compound(compound: int | str | None, smiles: str | None = Non
             descriptors = descriptors_from_smiles(compound_text)
 
     return pk_profile_from_descriptors(descriptors, label=label)
+
+
+def report_row_limit(value: Any) -> int | None:
+    """Normalize report row-limit widget values."""
+    if value is None:
+        return 50
+    text = str(value).strip().casefold()
+    if not text:
+        return 50
+    if text in {"all", "none"}:
+        return None
+    try:
+        limit = int(float(text))
+    except (TypeError, ValueError):
+        return 50
+    return None if limit <= 0 else limit
+
+
+def limited_report_dataframe(df: pd.DataFrame, row_limit: int | None = 50) -> pd.DataFrame:
+    """Return a display-safe dataframe limited to the requested number of rows."""
+    if df is None or df.empty:
+        return pd.DataFrame()
+    out = df.copy()
+    if row_limit is not None:
+        out = out.head(row_limit)
+    return out.fillna("")
+
+
+def _section_dataframe(section: dict[str, Any], row_limit: int | None) -> pd.DataFrame:
+    return limited_report_dataframe(section.get("df"), row_limit=row_limit)
+
+
+def build_interactive_html_report(title: str, sections: list[dict[str, Any]], row_limit: Any = 50) -> str:
+    """Build a self-contained HTML report with collapsible table sections."""
+    limit = report_row_limit(row_limit)
+    safe_title = html.escape(title or "ChEMBL Bioactivity Report")
+    body = [
+        "<!doctype html>",
+        "<html lang=\"en\">",
+        "<head>",
+        "<meta charset=\"utf-8\">",
+        f"<title>{safe_title}</title>",
+        "<style>",
+        "body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:2rem;color:#17202a;line-height:1.45}",
+        "h1{margin-bottom:.2rem} .meta{color:#5d6d7e;margin-bottom:1.5rem}",
+        "details{border:1px solid #d5d8dc;border-radius:8px;margin:1rem 0;padding:.75rem;background:#fbfcfc}",
+        "summary{font-weight:700;cursor:pointer;font-size:1.05rem}",
+        "table{border-collapse:collapse;width:100%;font-size:.88rem;margin-top:.75rem}",
+        "th,td{border:1px solid #d6dbdf;padding:.35rem .45rem;vertical-align:top}",
+        "th{background:#eaf2f8;text-align:left;position:sticky;top:0}",
+        "tr:nth-child(even){background:#f8f9f9}",
+        ".note{color:#566573;margin:.4rem 0}",
+        ".small{font-size:.82rem;color:#5d6d7e}",
+        "@media print{details{break-inside:avoid} summary{cursor:default} body{margin:1cm}}",
+        "</style>",
+        "</head><body>",
+        f"<h1>{safe_title}</h1>",
+        "<div class=\"meta\">Generated from the ChEMBL Bioactivity and Predicted Pharmacokinetics app. Use browser print/save-as-PDF for a printable copy.</div>",
+    ]
+
+    if not sections:
+        body.append("<p>No report sections were available.</p>")
+
+    for section in sections:
+        df = _section_dataframe(section, limit)
+        if df.empty:
+            continue
+        section_title = html.escape(str(section.get("title") or "Table"))
+        original_rows = len(section.get("df")) if section.get("df") is not None else len(df)
+        shown_rows = len(df)
+        note = section.get("note")
+        open_attr = " open" if section.get("open", True) else ""
+        body.append(f"<details{open_attr}>")
+        body.append(f"<summary>{section_title} <span class=\"small\">({shown_rows} of {original_rows} rows)</span></summary>")
+        if note:
+            body.append(f"<div class=\"note\">{html.escape(str(note))}</div>")
+        body.append(df.to_html(index=False, escape=True, border=0))
+        body.append("</details>")
+
+    body.append(
+        "<p class=\"small\"><strong>Disclaimer:</strong> Pharmacokinetic outputs are approximate screening estimates, not dosing or clinical safety guidance.</p>"
+    )
+    body.append("</body></html>")
+    return "\n".join(body)
+
+
+def _pdf_cell(value: Any):
+    from reportlab.platypus import Paragraph
+    from reportlab.lib.styles import getSampleStyleSheet
+
+    styles = getSampleStyleSheet()
+    style = styles["BodyText"]
+    style.fontSize = 6
+    style.leading = 7
+    if value is None or (isinstance(value, float) and math.isnan(value)):
+        text = ""
+    else:
+        text = html.escape(str(value))
+    return Paragraph(text, style)
+
+
+def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any = 50) -> bytes:
+    """Build a PDF report of current tables. Requires reportlab."""
+    from reportlab.lib import colors
+    from reportlab.lib.pagesizes import A4, landscape
+    from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.lib.units import cm
+    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+
+    limit = report_row_limit(row_limit)
+    buf = io.BytesIO()
+    doc = SimpleDocTemplate(
+        buf,
+        pagesize=landscape(A4),
+        leftMargin=0.8 * cm,
+        rightMargin=0.8 * cm,
+        topMargin=0.8 * cm,
+        bottomMargin=0.8 * cm,
+    )
+    styles = getSampleStyleSheet()
+    story = [Paragraph(html.escape(title or "ChEMBL Bioactivity Report"), styles["Title"])]
+    story.append(Paragraph("Approximate screening report generated by the ChEMBL Bioactivity and Predicted Pharmacokinetics app.", styles["BodyText"]))
+    story.append(Spacer(1, 0.25 * cm))
+
+    for section in sections:
+        df = _section_dataframe(section, limit)
+        if df.empty:
+            continue
+        section_title = str(section.get("title") or "Table")
+        original_rows = len(section.get("df")) if section.get("df") is not None else len(df)
+        story.append(Paragraph(html.escape(f"{section_title} ({len(df)} of {original_rows} rows)"), styles["Heading2"]))
+        if section.get("note"):
+            story.append(Paragraph(html.escape(str(section["note"])), styles["BodyText"]))
+
+        columns = list(df.columns)
+        data = [[_pdf_cell(col) for col in columns]]
+        for _, row in df.iterrows():
+            data.append([_pdf_cell(row.get(col, "")) for col in columns])
+        col_count = max(1, len(columns))
+        table = Table(data, repeatRows=1, colWidths=[doc.width / col_count] * col_count)
+        table.setStyle(
+            TableStyle(
+                [
+                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D6EAF8")),
+                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#AAB7B8")),
+                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9F9")]),
+                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                    ("TOPPADDING", (0, 0), (-1, -1), 2),
+                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                ]
+            )
+        )
+        story.append(table)
+        story.append(Spacer(1, 0.35 * cm))
+
+    story.append(Paragraph("Disclaimer: PK estimates are approximate screening values and must not be used for prescribing, self-dosing, or clinical safety decisions.", styles["BodyText"]))
+    doc.build(story)
+    return buf.getvalue()

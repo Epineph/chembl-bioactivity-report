@@ -1,13 +1,19 @@
 import unittest
 
+import pandas as pd
+
 from chembl_bioactivity_enhanced import (
     active_metabolite_notes_for_compound,
+    build_interactive_html_report,
+    build_pdf_report,
     clean_activity_df,
     estimate_exposure_thresholds,
     filter_by_threshold,
+    limited_report_dataframe,
     pk_estimate_formula_items,
     pk_profile_from_descriptors,
     predict_pk_from_descriptors,
+    report_row_limit,
     simulate_active_metabolite_curves,
     simulate_pk_curves,
 )
@@ -265,6 +271,53 @@ class ActivityCleanupTests(unittest.TestCase):
         filtered = filter_by_threshold(df, max_nM=1000)
 
         self.assertEqual(list(filtered["Target"]), ["CHEMBL2"])
+
+
+class ReportExportTests(unittest.TestCase):
+    def test_report_row_limit_normalizes_widget_values(self):
+        self.assertEqual(report_row_limit(25), 25)
+        self.assertEqual(report_row_limit("10"), 10)
+        self.assertIsNone(report_row_limit("all"))
+        self.assertIsNone(report_row_limit(0))
+        self.assertEqual(report_row_limit(""), 50)
+        self.assertEqual(report_row_limit("invalid"), 50)
+
+    def test_limited_report_dataframe_respects_limit(self):
+        df = pd.DataFrame({"Name": ["row-a", "row-b", "row-c"]})
+
+        limited = limited_report_dataframe(df, row_limit=2)
+
+        self.assertEqual(list(limited["Name"]), ["row-a", "row-b"])
+
+    def test_html_report_limits_rows_and_escapes_content(self):
+        df = pd.DataFrame({"Name": ["row-a", "row-b", "row-c"], "Value": ["<safe>", "B", "C"]})
+
+        html_report = build_interactive_html_report(
+            "Compound <Test>",
+            [{"title": "Results <Table>", "df": df, "note": "Use <care>"}],
+            row_limit=2,
+        )
+
+        self.assertIn("Compound &lt;Test&gt;", html_report)
+        self.assertIn("Results &lt;Table&gt;", html_report)
+        self.assertIn("Use &lt;care&gt;", html_report)
+        self.assertIn("row-a", html_report)
+        self.assertIn("row-b", html_report)
+        self.assertNotIn("row-c", html_report)
+        self.assertIn("(2 of 3 rows)", html_report)
+
+    def test_pdf_report_builds_pdf_bytes_when_reportlab_is_available(self):
+        try:
+            import reportlab  # noqa: F401
+        except Exception as exc:
+            self.skipTest(f"reportlab unavailable: {exc}")
+
+        df = pd.DataFrame({"Name": ["row-a", "row-b", "row-c"], "Value": [1, 2, 3]})
+
+        pdf = build_pdf_report("Compound Test", [{"title": "Results", "df": df}], row_limit=2)
+
+        self.assertTrue(pdf.startswith(b"%PDF-"))
+        self.assertGreater(len(pdf), 1000)
 
 
 if __name__ == "__main__":

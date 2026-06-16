@@ -27,7 +27,7 @@ clinical dosing, prescribing, or safety tool.
 - Estimates MEC/MTC from optional reference active/toxic doses.
 - Shows route-specific Cmax, Tmax, AUC, onset, duration, and post-peak decline.
 - Provides curated active-metabolite caveats and limited active-moiety overlays.
-- Exports tables and curves as CSV/XLSX.
+- Exports tables and curves as CSV/XLSX, plus a PDF report and a collapsible standalone HTML report.
 
 ## Current Model Scope
 
@@ -84,6 +84,17 @@ These overlays are curated heuristics. The app does not automatically infer
 enzyme pathways, stereochemistry, metabolite potency, or genotype-specific
 metabolism for arbitrary molecules.
 
+## Report Export
+
+The app keeps individual CSV/XLSX downloads and also creates two summary reports:
+
+- PDF report for printable table summaries.
+- Standalone HTML report with clickable/collapsible sections.
+
+Use the `Report rows/table` control to choose how many rows each displayed table
+and report section should include. Dense concentration-time curves remain CSV
+downloads rather than full report tables.
+
 ## Repository Layout
 
 ```text
@@ -104,7 +115,7 @@ conda-forge.
 ```bash
 micromamba create -n chembl-pk -c conda-forge \
   python=3.11 rdkit numpy pandas matplotlib jupyterlab ipykernel ipywidgets \
-  itables pillow openpyxl voila requests pubchempy py3Dmol tabulate -y
+  itables pillow openpyxl reportlab voila requests pubchempy py3Dmol tabulate -y
 
 micromamba activate chembl-pk
 python -m ipykernel install --user --name chembl-pk --display-name "Python (chembl-pk)"
