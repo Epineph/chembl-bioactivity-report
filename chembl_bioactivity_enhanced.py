@@ -590,6 +590,22 @@ def _therapeutic_window_duration(
     return total
 
 
+def _post_peak_half_time(times: list[float], concentrations: list[float]) -> float | None:
+    """Time after Cmax for concentration to fall to half of Cmax."""
+    if not times or not concentrations:
+        return None
+    cmax = max(concentrations)
+    if cmax <= 0:
+        return None
+    peak_idx = concentrations.index(cmax)
+    threshold = cmax / 2.0
+    for idx in range(peak_idx + 1, len(times)):
+        if concentrations[idx] <= threshold <= concentrations[idx - 1]:
+            crossing = _linear_crossing_time(times[idx - 1], concentrations[idx - 1], times[idx], concentrations[idx], threshold)
+            return max(0.0, crossing - times[peak_idx])
+    return None
+
+
 def estimate_threshold_from_reference_dose(
     prediction: dict[str, Any],
     reference_dose_amount: Any,
@@ -706,6 +722,7 @@ def simulate_pk_for_route(
     clearance_l_h = clearance_ml_min_kg * 0.06 * body_weight_kg
     ke_h = clearance_l_h / vd_l
     half_life_h = math.log(2) / ke_h if ke_h > 0 else None
+    absorption_half_life_h = math.log(2) / route_params["ka_h"] if route_params["ka_h"] else None
     absorbed_dose_mg = route_params["F"] * dose_mg
 
     steps = int(math.ceil(duration_h / time_step_h))
@@ -736,6 +753,7 @@ def simulate_pk_for_route(
 
     cmax_mg_l = max(concentrations)
     tmax_h = times[concentrations.index(cmax_mg_l)]
+    post_peak_half_time_h = _post_peak_half_time(times, concentrations)
     auc_0_inf_mg_h_l = absorbed_dose_mg / clearance_l_h if clearance_l_h > 0 else None
     auc_last = sum(
         (concentrations[idx - 1] + concentrations[idx]) / 2.0 * (times[idx] - times[idx - 1])
@@ -765,7 +783,9 @@ def simulate_pk_for_route(
         "Vd (L/kg)": vd_l_kg,
         "CL (mL/min/kg)": clearance_ml_min_kg,
         "ke (1/h)": ke_h,
-        "Half-life (h)": half_life_h,
+        "Elimination t1/2 (h)": half_life_h,
+        "Absorption t1/2 (h)": absorption_half_life_h,
+        "Post-peak 50% decline (h)": post_peak_half_time_h,
         "Cmax (mg/L)": cmax_mg_l,
         "Tmax (h)": tmax_h,
         "AUC 0-inf (mg*h/L)": auc_0_inf_mg_h_l,
@@ -985,6 +1005,32 @@ def pk_formula_items() -> list[tuple[str, str]]:
         ("Injection volume", r"V_{admin} = \frac{D_{prescribed}}{C_{solution}}"),
         ("Reference-dose threshold calibration", r"MEC \approx f_{Cmax} \cdot C_{max,ref\ active}"),
         ("Reference toxic threshold calibration", r"MTC \approx f_{Cmax} \cdot C_{max,ref\ toxic}"),
+    ]
+
+
+def pk_estimate_formula_items() -> list[tuple[str, str]]:
+    """Formula labels for descriptor-derived estimates."""
+    return [
+        (
+            "Absorption descriptor penalty",
+            r"P_{abs}=P_{TPSA}+P_{rotB}+P_{MW}+P_{logP}+P_{HBD}+0.35\cdot RO5_{viol}",
+        ),
+        ("Predicted fraction absorbed", r"F_a = 100\cdot \sigma(2.2-P_{abs})"),
+        ("Oral bioavailability potential", r"F_{oral}=F_a\cdot FP_{factor}"),
+        ("Clark-style brain:blood estimate", r"logBB=0.152\cdot logP-0.0148\cdot TPSA+0.139"),
+        (
+            "Volume of distribution heuristic",
+            r"log_{10}(V_d)=0.16(logP-1.5)-0.0035(TPSA-75)-0.0008(MW-350)+q_{adj}",
+        ),
+        ("Hepatic clearance proxy", r"CL_H=20.7\cdot(0.02+0.55\cdot \sigma(S_H))"),
+        ("Renal clearance proxy", r"CL_R=1.0\cdot \sigma(S_R)"),
+        ("Total clearance proxy", r"CL=CL_H+CL_R"),
+        ("Elimination half-life", r"t_{1/2,elim}=\frac{\ln(2)\cdot V_d}{CL}"),
+        ("Absorption half-life", r"t_{1/2,abs}=\frac{\ln(2)}{k_a}"),
+        (
+            "Post-peak half-time",
+            r"t_{50,postpeak}=t(C=0.5\cdot C_{max},\ t>T_{max})-T_{max}",
+        ),
     ]
 
 

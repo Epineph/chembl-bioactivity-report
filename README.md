@@ -55,8 +55,11 @@ calculate `Volume to administer = Prescribed dose / Concentration` for IV or
 subcutaneous routes. If MEC/MTC are unknown, you can provide a minimum active
 dose and/or minimum toxic dose with a reference route; the app estimates the
 threshold from a configurable fraction of the predicted reference-route Cmax.
-The simulator reports Cmax, Tmax, AUC, half-life, onset to MEC, duration above
-MEC, time above MTC, and route-specific assumptions.
+For example, `Ref Cmax fraction = 0.50` means the estimated MEC/MTC is half of
+the predicted peak concentration at the entered reference dose and route. The
+simulator reports Cmax, Tmax, AUC, elimination half-life, absorption half-life,
+post-peak 50% decline time, onset to MEC, duration above MEC, time above MTC,
+and route-specific assumptions.
 
 The app adds a small curated active-metabolite/prodrug caveat table for common
 examples such as codeine, diazepam, tramadol, clopidogrel, prednisone, and
@@ -80,6 +83,12 @@ inducers or inhibitors. These outputs are not dosing, prescribing, or safety
 guidance. Active-metabolite models are curated heuristics only; the app does not
 automatically infer enzyme pathways, stereochemistry, metabolite potency, or
 genotype-specific metabolism for arbitrary molecules.
+
+Half-life note: elimination half-life is compound/system dependent and generally
+does not change by route in this one-compartment model. Route effects are shown
+through absorption half-life, Tmax, duration above MEC, and post-peak 50%
+decline time. Slow absorption can make the apparent post-peak decline longer
+than the elimination half-life.
 
 Binder note: full PubChem property scraping and PubChem 3D conformer retrieval
 are slower network calls, so they are opt-in checkboxes in the app. Leaving them

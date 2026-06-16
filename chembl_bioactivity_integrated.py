@@ -23,6 +23,7 @@ from chembl_bioactivity_enhanced import (
     active_metabolite_notes_for_compound,
     descriptors_from_pubchem_cid,
     estimate_exposure_thresholds,
+    pk_estimate_formula_items,
     pk_formula_items,
     pk_profile_from_descriptors,
     predict_pk_from_descriptors,
@@ -515,7 +516,9 @@ def format_pk_simulation_summary(df: pd.DataFrame) -> pd.DataFrame:
         "Cmax (mg/L)",
         "Tmax (h)",
         "AUC 0-inf (mg*h/L)",
-        "Half-life (h)",
+        "Elimination t1/2 (h)",
+        "Absorption t1/2 (h)",
+        "Post-peak 50% decline (h)",
         "Onset to MEC (h)",
         "Falls below MEC (h)",
         "Duration above MEC (h)",
@@ -595,7 +598,13 @@ def formula_svg_html(label: str, formula: str) -> str:
         return f'<div class="pk-formula"><strong>{label_html}</strong><pre>{formula_html}</pre></div>'
 
 def display_pk_formulas():
-    blocks = ["<h4>One-compartment simulation formulas</h4>"]
+    blocks = ["<h4>Descriptor-derived estimate formulas</h4>"]
+    blocks.extend(formula_svg_html(label, formula) for label, formula in pk_estimate_formula_items())
+    blocks.append(
+        "<p>These descriptor formulas are transparent heuristics. The penalty terms use clipped descriptor excesses; "
+        "<code>sigma</code> is the logistic function, and <code>q_adj</code> is a formal-charge adjustment.</p>"
+    )
+    blocks.append("<h4>One-compartment simulation formulas</h4>")
     blocks.extend(formula_svg_html(label, formula) for label, formula in pk_formula_items())
     blocks.append(
         "<p>Onset is the first time the predicted concentration reaches MEC. "
@@ -716,10 +725,10 @@ def interactive_mode():
         min=0.05,
         max=1.0,
         step=0.05,
-        description='Threshold/Cmax:',
+        description='Ref Cmax fraction:',
         readout_format='.2f',
         style={'description_width': 'initial'},
-        layout=widgets.Layout(width='330px')
+        layout=widgets.Layout(width='380px')
     )
     show_3d = widgets.Checkbox(
         value=False,
@@ -744,7 +753,7 @@ def interactive_mode():
         widgets.HBox([ref_active_dose, ref_toxic_dose, ref_dose_unit, ref_route]),
         ref_cmax_fraction,
         widgets.HBox([show_3d, show_pubchem_props]),
-        widgets.HTML("<em>MEC/MTC are optional concentration thresholds in mg/L. If left as 0, a minimum active/toxic reference dose can estimate them from predicted reference Cmax.</em>"),
+        widgets.HTML("<em>MEC/MTC are optional thresholds in mg/L. If left as 0, a minimum active/toxic reference dose estimates them as: threshold = Ref Cmax fraction × predicted Cmax for that reference dose and route. Example: 0.50 means half of the predicted reference-dose peak.</em>"),
     ])
 
     def on_click(_):
@@ -881,6 +890,7 @@ def interactive_mode():
                         display(HTML(make_download_link(curve_df, "pk_concentration_curve.csv", "csv", sep=sep_choice.value)))
                     if mec is None:
                         display(Markdown("> Enter an MEC above 0 mg/L or a minimum active reference dose to calculate onset and duration above MEC."))
+                    display(Markdown("> **Half-life note:** elimination half-life is compound/system dependent and usually route-independent in this one-compartment model. Route differences are shown as absorption half-life and post-peak 50% decline time."))
                     display(Markdown(f"> {PK_SIMULATION_NOTE}"))
                     display_pk_formulas()
 

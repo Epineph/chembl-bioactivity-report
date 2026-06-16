@@ -5,6 +5,7 @@ from chembl_bioactivity_enhanced import (
     clean_activity_df,
     estimate_exposure_thresholds,
     filter_by_threshold,
+    pk_estimate_formula_items,
     pk_profile_from_descriptors,
     predict_pk_from_descriptors,
     simulate_active_metabolite_curves,
@@ -123,7 +124,42 @@ class PharmacokineticPredictionTests(unittest.TestCase):
         self.assertEqual(set(summary["Route"]), {"Oral", "Intravenous"})
         self.assertGreater(summary.loc[summary["Route"] == "Intravenous", "Cmax (mg/L)"].iloc[0], 0)
         self.assertEqual(summary.loc[summary["Route"] == "Intravenous", "Volume to administer (mL)"].iloc[0], 2)
+        self.assertIn("Elimination t1/2 (h)", summary.columns)
+        self.assertIn("Absorption t1/2 (h)", summary.columns)
+        self.assertIn("Post-peak 50% decline (h)", summary.columns)
         self.assertIn("Concentration (mg/L)", curve.columns)
+
+    def test_route_half_times_separate_elimination_and_absorption(self):
+        prediction = predict_pk_from_descriptors(
+            {
+                "MolecularWeight": 310,
+                "XLogP": 2.2,
+                "TPSA": 65,
+                "HBondDonorCount": 1,
+                "HBondAcceptorCount": 4,
+                "RotatableBondCount": 4,
+                "Charge": 0,
+            }
+        )
+        _, summary = simulate_pk_curves(
+            prediction,
+            dose_amount=10,
+            dose_unit="milligram",
+            routes=["Oral", "Subcutaneous", "Intravenous"],
+        )
+
+        self.assertEqual(summary["Elimination t1/2 (h)"].nunique(), 1)
+        self.assertNotEqual(
+            summary.loc[summary["Route"] == "Oral", "Post-peak 50% decline (h)"].iloc[0],
+            summary.loc[summary["Route"] == "Subcutaneous", "Post-peak 50% decline (h)"].iloc[0],
+        )
+
+    def test_descriptor_formula_items_include_estimate_context(self):
+        labels = {label for label, _ in pk_estimate_formula_items()}
+
+        self.assertIn("Predicted fraction absorbed", labels)
+        self.assertIn("Clark-style brain:blood estimate", labels)
+        self.assertIn("Post-peak half-time", labels)
 
     def test_reference_dose_can_estimate_mec_and_mtc(self):
         prediction = predict_pk_from_descriptors(
