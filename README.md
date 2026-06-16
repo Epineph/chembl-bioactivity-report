@@ -81,6 +81,10 @@ guidance. Active-metabolite models are curated heuristics only; the app does not
 automatically infer enzyme pathways, stereochemistry, metabolite potency, or
 genotype-specific metabolism for arbitrary molecules.
 
+Binder note: full PubChem property scraping and PubChem 3D conformer retrieval
+are slower network calls, so they are opt-in checkboxes in the app. Leaving them
+off makes the first search much more responsive.
+
 You can also call the estimator directly from Python:
 
 ```python

@@ -4,5 +4,5 @@ set -euo pipefail
 # Ensure a predictable kernel name for Voila
 python -m ipykernel install --name=python3 --display-name "Python (chembl-report)" --sys-prefix
 
-# Enable classic widgets extension (helps Voila in some images)
-jupyter nbextension enable --py widgetsnbextension --sys-prefix || true
+# ipywidgets 8 + JupyterLab/Voila do not need the old classic Notebook
+# nbextension command. Keeping postBuild minimal avoids Binder startup noise.

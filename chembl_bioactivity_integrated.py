@@ -490,6 +490,19 @@ def value_from_property_df(df: pd.DataFrame, *property_names: str):
     value = hits.iloc[0]["Value"]
     return None if pd.isna(value) else str(value)
 
+def descriptors_from_property_df(df: pd.DataFrame) -> dict:
+    if df is None or df.empty or "Property" not in df.columns or "Value" not in df.columns:
+        return {}
+    out = {}
+    for _, row in df.iterrows():
+        prop = str(row.get("Property", "")).strip()
+        value = row.get("Value")
+        if prop and not pd.isna(value):
+            out[prop] = value
+    if out:
+        out["DescriptorSource"] = "PubChem basic properties"
+    return out
+
 def format_pk_simulation_summary(df: pd.DataFrame) -> pd.DataFrame:
     if df is None or df.empty:
         return pd.DataFrame()
@@ -682,6 +695,18 @@ def interactive_mode():
         style={'description_width': 'initial'},
         layout=widgets.Layout(width='330px')
     )
+    show_3d = widgets.Checkbox(
+        value=False,
+        description='Fetch 3D structure (slower)',
+        indent=False,
+        layout=widgets.Layout(width='250px')
+    )
+    show_pubchem_props = widgets.Checkbox(
+        value=False,
+        description='Fetch full PubChem properties (slower)',
+        indent=False,
+        layout=widgets.Layout(width='310px')
+    )
     run_btn = widgets.Button(description="Search", button_style='primary')
     out = widgets.Output()
 
@@ -692,6 +717,7 @@ def interactive_mode():
         widgets.HBox([route_select, widgets.VBox([mec_input, mtc_input, injection_conc])]),
         widgets.HBox([ref_active_dose, ref_toxic_dose, ref_dose_unit, ref_route]),
         ref_cmax_fraction,
+        widgets.HBox([show_3d, show_pubchem_props]),
         widgets.HTML("<em>MEC/MTC are optional concentration thresholds in mg/L. If left as 0, a minimum active/toxic reference dose can estimate them from predicted reference Cmax.</em>"),
     ])
 
@@ -757,7 +783,10 @@ def interactive_mode():
                 "Isomeric SMILES",
                 "Canonical SMILES",
             )
-            descriptors = descriptors_from_pubchem_cid(cid, smiles=smiles)
+            descriptors = descriptors_from_property_df(df_basic)
+            has_core_descriptors = any(key in descriptors for key in ["MolecularWeight", "XLogP", "TPSA"])
+            if not has_core_descriptors:
+                descriptors = descriptors_from_pubchem_cid(cid, smiles=smiles)
             smiles = smiles or descriptors.get("IsomericSMILES") or descriptors.get("CanonicalSMILES")
 
             display(Markdown("#### Predicted Pharmacokinetics (structure-based)"))
@@ -869,23 +898,29 @@ def interactive_mode():
                     display(Markdown("> Unable to render 2D structure (RDKit and PNG fallback both failed)."))
 
             # 3D structure
-            display(Markdown("#### 3D Structure (interactive)"))
-            viewer = py3dmol_view_from_pubchem_cid(cid)
-            if viewer is not None:
-                viewer.show()
+            if show_3d.value:
+                display(Markdown("#### 3D Structure (interactive)"))
+                viewer = py3dmol_view_from_pubchem_cid(cid)
+                if viewer is not None:
+                    viewer.show()
+                else:
+                    msg = "py3Dmol not available" if not _P3D else "No PubChem 3D conformer found or retrieval failed"
+                    display(Markdown(f"> 3D viewer unavailable: {msg}."))
             else:
-                msg = "py3Dmol not available" if not _P3D else "No PubChem 3D conformer found or retrieval failed"
-                display(Markdown(f"> 3D viewer unavailable: {msg}."))
+                display(Markdown("> 3D structure skipped. Enable **Fetch 3D structure (slower)** to retrieve it."))
 
             # Experimental/Computed properties (robust)
-            display(Markdown("#### Experimental / Computed Properties (PubChem)"))
-            df_exp = pubchem_experimental_props_df(cid)
-            if not df_exp.empty:
-                show(df_exp, classes="display compact cell-border", maxBytes=0, pageLength=50)
-                display(HTML(make_download_link(df_exp, "pubchem_properties.csv", "csv", sep=sep_choice.value)))
-                display(HTML(make_download_link(df_exp, "pubchem_properties.xlsx", "xlsx")))
+            if show_pubchem_props.value:
+                display(Markdown("#### Experimental / Computed Properties (PubChem)"))
+                df_exp = pubchem_experimental_props_df(cid)
+                if not df_exp.empty:
+                    show(df_exp, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                    display(HTML(make_download_link(df_exp, "pubchem_properties.csv", "csv", sep=sep_choice.value)))
+                    display(HTML(make_download_link(df_exp, "pubchem_properties.xlsx", "xlsx")))
+                else:
+                    display(Markdown("> No experimental/computed properties found (or parse failed)."))
             else:
-                display(Markdown("> No experimental/computed properties found (or parse failed)."))
+                display(Markdown("> Full PubChem property scrape skipped. Enable **Fetch full PubChem properties (slower)** to retrieve it."))
 
     run_btn.on_click(on_click)
     display(widgets.VBox([controls, filters, pk_controls, out]))
