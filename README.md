@@ -1,152 +1,149 @@
-# Chembl Bioactivity Report
+# ChEMBL Bioactivity and Predicted Pharmacokinetics
 
-## Run it in your browser
+Interactive Voila app for exploring molecule bioactivity, PubChem descriptors,
+and transparent structure-based pharmacokinetic estimates.
 
-Click the **Launch Binder** badge below to run the notebook online in your
-browser and investigate the pharmacodynamic activity of a molecule of interest.
+The app is designed for hypothesis generation and teaching. It is **not** a
+clinical dosing, prescribing, or safety tool.
 
-The data sources are official and reliable. They are listed in both the rendered
-notebook and the source code available in this repository. You do **not** need
-to download or install anything to use the notebook.
-
-Results are displayed in an interactive table and can also be downloaded as
-Excel files (`.xlsx`) or delimited text files (`.csv`, semicolon-separated, or
-tab-separated).
-
-<p align="center">
-  <strong>Launch Binder</strong><br>
-  ⬇️<br>
-
-</p>
+## Launch Online
 
 <p align="center">
   <a href="https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb">
     <img src="https://mybinder.org/badge_logo.svg" alt="Launch Binder">
   </a>
 </p>
-<!-- [![Binder](https://mybinder.org/badge_logo.svg)](https://mybinder.org/v2/gh/Epineph/chembl-bioactivity-report/main?urlpath=voila/render/chembl.ipynb)-->
 
-[![Python ≥3.9](https://img.shields.io/badge/python-3.9%2B-blue)](https://www.python.org/)\
+[![Python >=3.11](https://img.shields.io/badge/python-3.11%2B-blue)](https://www.python.org/)
 [![License: MIT](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
----
+## What It Does
 
-## 🚀 Features
+- Looks up a compound by name.
+- Fetches human bioactivity data from ChEMBL.
+- Resolves PubChem CID and computed descriptors.
+- Estimates structure-based ADME/PK properties from descriptors.
+- Simulates concentration-time curves by route and dose.
+- Estimates MEC/MTC from optional reference active/toxic doses.
+- Shows route-specific Cmax, Tmax, AUC, onset, duration, and post-peak decline.
+- Provides curated active-metabolite caveats and limited active-moiety overlays.
+- Exports tables and curves as CSV/XLSX.
 
-- **Lookup** by compound name (case-insensitive)
-- **Fetch** all _Homo sapiens_ bioactivities
-- **Compute** Kd (nM) for association constants
-- **Estimate** structure-based pharmacokinetics for compounds without clinical PK data
-- **Render** as Markdown table (CLI) or HTML (Jupyter)
+## Current Model Scope
 
-## Predicted Pharmacokinetics
+The PK layer uses transparent heuristics rather than fitted clinical models.
+Inputs include molecular weight, logP, TPSA, H-bond donors/acceptors, rotatable
+bonds, and formal charge.
 
-The app now adds a **Predicted Pharmacokinetics (structure-based)** table after
-PubChem descriptor lookup. It estimates oral absorption potential, oral
-bioavailability potential, BBB penetration tendency, volume of distribution,
-clearance, and terminal half-life from molecular descriptors such as MW, logP,
-TPSA, H-bond donors/acceptors, rotatable bonds, and formal charge.
+The strongest parts are descriptor rules and relationships such as Lipinski RO5,
+Veber oral exposure criteria, and a Clark-style logBB estimate. Clearance,
+volume of distribution, bioavailability, and half-life are lower-confidence
+screening estimates because accurate values usually require in vitro metabolism,
+transporter data, or observed animal/human PK.
 
-The app also includes a dose/route simulator for exploratory concentration-time
-curves. You can enter a dose in micrograms, milligrams, or grams; choose oral,
-sublingual, intranasal, subcutaneous, and/or intravenous routes; enter optional
-MEC/MTC thresholds in mg/L; and enter an injection concentration in mg/mL to
-calculate `Volume to administer = Prescribed dose / Concentration` for IV or
-subcutaneous routes. If MEC/MTC are unknown, you can provide a minimum active
-dose and/or minimum toxic dose with a reference route; the app estimates the
-threshold from a configurable fraction of the predicted reference-route Cmax.
-For example, `Ref Cmax fraction = 0.50` means the estimated MEC/MTC is half of
-the predicted peak concentration at the entered reference dose and route. The
-simulator reports Cmax, Tmax, AUC, elimination half-life, absorption half-life,
-post-peak 50% decline time, onset to MEC, duration above MEC, time above MTC,
-and route-specific assumptions.
+The route simulator uses a one-compartment model with first-order absorption for
+oral, sublingual, intranasal, and subcutaneous routes, and IV bolus kinetics for
+intravenous route. It assumes a healthy 70 kg young adult unless changed in the
+UI, normal renal/CYP activity, and no major enzyme inhibitors or inducers.
 
-The app adds a small curated active-metabolite/prodrug caveat table for common
-examples such as codeine, diazepam, tramadol, clopidogrel, prednisone, and
-enalapril. For selected cases where parent-only curves are especially misleading
-(`tramadol`, `codeine`, and `diazepam`), it also plots a rough active-metabolite
-or active-moiety curve. For tramadol, the M1 curve uses the parent/M1 MOR Ki
-ratio as a potency-weighted approximation, so it should be interpreted as an
-opioid-receptor active-moiety index rather than measured plasma concentration.
+## MEC/MTC Calibration
 
-These are screening estimates for hypothesis generation, not clinical dosing or
-safety guidance. The most evidence-aligned pieces are descriptor rules such as
-Lipinski RO5, Veber oral exposure criteria, and the Clark-style logBB
-relationship using logP and polar surface area. Clearance and half-life are
-lower-confidence heuristics because accurate values usually require in vitro
-metabolism/transport data or human/animal PK observations.
+If you know a rough minimum active dose or minimum toxic dose for a reference
+route, the app can estimate concentration thresholds:
 
-The concentration curves use a one-compartment model with first-order absorption
-for non-IV routes and IV bolus kinetics for the intravenous route. They assume a
-healthy young adult with normal renal and CYP activity and no major enzyme
-inducers or inhibitors. These outputs are not dosing, prescribing, or safety
-guidance. Active-metabolite models are curated heuristics only; the app does not
-automatically infer enzyme pathways, stereochemistry, metabolite potency, or
-genotype-specific metabolism for arbitrary molecules.
-
-Half-life note: elimination half-life is compound/system dependent and generally
-does not change by route in this one-compartment model. Route effects are shown
-through absorption half-life, Tmax, duration above MEC, and post-peak 50%
-decline time. Slow absorption can make the apparent post-peak decline longer
-than the elimination half-life.
-
-Binder note: full PubChem property scraping and PubChem 3D conformer retrieval
-are slower network calls, so they are opt-in checkboxes in the app. Leaving them
-off makes the first search much more responsive.
-
-You can also call the estimator directly from Python:
-
-```python
-from chembl_bioactivity_enhanced import pk_profile_for_compound
-
-# PubChem CID
-df_pk = pk_profile_for_compound(3000322)
-
-# Or a SMILES string, if RDKit is installed
-df_pk = pk_profile_for_compound("CN1C(=O)N(C)c2ncn(C)c2C1=O")
+```text
+estimated threshold = Ref Cmax fraction * predicted reference-dose Cmax
 ```
 
-## ⚙️ Installation
+For example, `Ref Cmax fraction = 0.50` means MEC/MTC is estimated as half of
+the predicted peak concentration for the supplied reference dose and route. This
+is only a rough calibration tool; a real therapeutic window requires empirical
+exposure-response data.
 
-### Create a virtual environment
+## Half-Life Interpretation
 
-You can use any name for your virtual environment, below chembl-bioactivity is used as an example.
+Elimination half-life is compound/system dependent and generally does not change
+by route in the current one-compartment model. Route effects are shown through:
+
+- absorption half-life
+- Tmax
+- onset and duration above MEC
+- post-peak 50% decline time
+
+Slow absorption can make the apparent post-peak decline longer than the intrinsic
+elimination half-life.
+
+## Active Metabolites
+
+The app includes curated caveats for selected examples such as codeine,
+tramadol, diazepam, clopidogrel, prednisone, and enalapril. For a few compounds
+where parent-only curves can be especially misleading, it also plots a rough
+active-metabolite or active-moiety index.
+
+These overlays are curated heuristics. The app does not automatically infer
+enzyme pathways, stereochemistry, metabolite potency, or genotype-specific
+metabolism for arbitrary molecules.
+
+## Repository Layout
+
+```text
+chembl.ipynb                      Voila launcher notebook used by Binder
+chembl_bioactivity_integrated.py  Interactive app and rendering logic
+chembl_bioactivity_enhanced.py    Bioactivity cleanup, PK formulas, simulations
+tests/                            Unit tests for PK helpers
+binder/                           Binder environment and build hooks
+requirements.txt                  pip dependencies for local installs
+voila.json                        Voila configuration
+```
+
+## Local Installation
+
+Conda/micromamba is recommended because RDKit is easiest to install from
+conda-forge.
 
 ```bash
-# Create a fresh environment dedicated to this workflow
-micromamba create -n chembl-bioactivity -c conda-forge \
-  python=3.11 \
-  "numpy<2" \
-  rdkit \
-  chembl-webresource-client pandas tabulate ipywidgets itables openpyxl matplotlib \
-  requests pubchempy py3Dmol pillow -y
+micromamba create -n chembl-pk -c conda-forge \
+  python=3.11 rdkit numpy pandas matplotlib jupyterlab ipykernel ipywidgets \
+  itables pillow openpyxl voila requests pubchempy py3Dmol tabulate -y
 
-# Register a Jupyter kernel for the new env
-micromamba activate chembl-bioactivity
-python -m ipykernel install --user --name chembl-bioactivity --display-name "Python (chembl-bioactivity)"
-
+micromamba activate chembl-pk
+python -m ipykernel install --user --name chembl-pk --display-name "Python (chembl-pk)"
 ```
 
-### Install some dependencies
+Or install from `requirements.txt` in an existing environment:
 
 ```bash
-python -m pip install rdkit numpy pandas matplotlib jupyterlab ipykernel ipywidgets itables pillow openpyxl voila
-# If using mamba or conda rather than micromamba, use that instead
-# Alternatively, use pip to install all the packages
-micromamba install -c conda-forge chembl-webresource-client pubchempy py3Dmol tabulate
-
+python -m pip install -r requirements.txt
 ```
 
-Some users may have to include _python3_ instead of _python_ in the command, so:
+## Run Locally
 
-```bash
-python3 -m pip install rdkit numpy pandas matplotlib jupyterlab ipykernel ipywidgets itables pillow openpyxl voila chembl-webresource-client pubchempy py3Dmol tabulate
-```
-
-Then just launch jupyter lab (or use the binder badge above) locally:
+Launch JupyterLab and open `chembl.ipynb`:
 
 ```bash
 jupyter lab
 ```
 
-And open the _chembl_bioactivity.ipynb_
+Or render directly with Voila:
+
+```bash
+voila chembl.ipynb
+```
+
+## Run Tests
+
+```bash
+python -m unittest discover -s tests
+```
+
+## Data Sources
+
+- ChEMBL: human target bioactivity data.
+- PubChem: compound identifiers, structure, descriptors, images, and optional property scraping.
+- RDKit: local descriptor calculation and 2D structure rendering when available.
+
+## Important Disclaimer
+
+All pharmacokinetic values are approximate screening estimates. They should not
+be used to decide dose, route, medical treatment, toxicity risk, or personal drug
+use. Clinical PK requires validated experimental data and professional review.

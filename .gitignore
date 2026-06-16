@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+*$py.class
+
+.ipynb_checkpoints/
+.virtual_documents/
+.backup/
+.jupyter_ystore.db
+
+.DS_Store
+.env
+.venv/
+venv/
+env/
+
+*.csv
+*.xlsx
