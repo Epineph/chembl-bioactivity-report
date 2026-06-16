@@ -976,15 +976,15 @@ def pk_formula_items() -> list[tuple[str, str]]:
     return [
         ("Elimination rate", r"k_e = \frac{CL}{V_d}"),
         ("Half-life", r"t_{1/2} = \frac{\ln(2)}{k_e}"),
-        ("IV bolus concentration", r"C(t) = \frac{F \cdot Dose}{V_d} e^{-k_e t},\quad F=1"),
+        ("IV bolus concentration", r"C(t) = \frac{F \cdot D}{V_d} e^{-k_e t},\quad F=1"),
         (
             "First-order absorption concentration",
-            r"C(t) = \frac{F \cdot Dose \cdot k_a}{V_d(k_a-k_e)}\left(e^{-k_e(t-t_{lag})} - e^{-k_a(t-t_{lag})}\right)",
+            r"C(t) = \frac{F \cdot D \cdot k_a}{V_d(k_a-k_e)}\left(e^{-k_e(t-t_{lag})} - e^{-k_a(t-t_{lag})}\right)",
         ),
-        ("Exposure", r"AUC_{0-\infty} = \frac{F \cdot Dose}{CL}"),
-        ("Injection volume", r"Volume\ to\ administer = \frac{Prescribed\ dose}{Concentration}"),
-        ("Reference-dose threshold calibration", r"MEC \approx f_{Cmax} \cdot C_{max,\ reference\ active\ dose}"),
-        ("Reference toxic threshold calibration", r"MTC \approx f_{Cmax} \cdot C_{max,\ reference\ toxic\ dose}"),
+        ("Exposure", r"AUC_{0-\infty} = \frac{F \cdot D}{CL}"),
+        ("Injection volume", r"V_{admin} = \frac{D_{prescribed}}{C_{solution}}"),
+        ("Reference-dose threshold calibration", r"MEC \approx f_{Cmax} \cdot C_{max,ref\ active}"),
+        ("Reference toxic threshold calibration", r"MTC \approx f_{Cmax} \cdot C_{max,ref\ toxic}"),
     ]
 
 

@@ -29,10 +29,10 @@ from chembl_bioactivity_enhanced import (
     simulate_active_metabolite_curves,
     simulate_pk_curves,
 )
-import io, base64, json, re, requests, contextlib, warnings, time, unicodedata
+import html, io, base64, json, re, requests, contextlib, warnings, time, unicodedata
 from urllib.parse import quote
 import pandas as pd
-from IPython.display import display, clear_output, Markdown, HTML, Image, Math
+from IPython.display import display, clear_output, Markdown, HTML, Image
 import ipywidgets as widgets
 
 # Silence known deprecation warning from chembl_webresource_client
@@ -571,12 +571,38 @@ def plot_active_metabolite_curves(curve_df: pd.DataFrame):
     fig.tight_layout()
     return fig
 
+def formula_svg_html(label: str, formula: str) -> str:
+    label_html = html.escape(label)
+    formula_html = html.escape(formula)
+    if not _MPL:
+        return f'<div class="pk-formula"><strong>{label_html}</strong><pre>{formula_html}</pre></div>'
+    try:
+        fig = plt.figure(figsize=(0.01, 0.01))
+        fig.text(0, 0, f"${formula}$", fontsize=15, color="black")
+        buf = io.StringIO()
+        fig.savefig(buf, format="svg", bbox_inches="tight", transparent=True, pad_inches=0.08)
+        plt.close(fig)
+        svg = buf.getvalue()
+        b64 = base64.b64encode(svg.encode("utf-8")).decode("ascii")
+        return (
+            '<div class="pk-formula" style="margin:0.7rem 0;">'
+            f'<div style="font-weight:600;margin-bottom:0.2rem;">{label_html}</div>'
+            f'<img src="data:image/svg+xml;base64,{b64}" alt="{formula_html}" '
+            'style="max-width:100%;height:auto;background:white;" />'
+            '</div>'
+        )
+    except Exception:
+        return f'<div class="pk-formula"><strong>{label_html}</strong><pre>{formula_html}</pre></div>'
+
 def display_pk_formulas():
-    display(Markdown("**One-compartment simulation formulas**"))
-    for label, formula in pk_formula_items():
-        display(Markdown(label))
-        display(Math(formula))
-    display(Markdown("Onset is the first time the predicted concentration reaches MEC. Duration is the time above MEC; if MTC is supplied or estimated, the table also reports time above MTC and time inside the approximate therapeutic window."))
+    blocks = ["<h4>One-compartment simulation formulas</h4>"]
+    blocks.extend(formula_svg_html(label, formula) for label, formula in pk_formula_items())
+    blocks.append(
+        "<p>Onset is the first time the predicted concentration reaches MEC. "
+        "Duration is the time above MEC; if MTC is supplied or estimated, the table also reports "
+        "time above MTC and time inside the approximate therapeutic window.</p>"
+    )
+    display(HTML("\n".join(blocks)))
 
 # ----------------------------
 # Interactive UI
