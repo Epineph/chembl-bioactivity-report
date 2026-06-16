@@ -37,11 +37,87 @@ PK_ESTIMATE_NOTE = (
     "heuristics without in vitro or human PK data."
 )
 
+PK_SIMULATION_NOTE = (
+    "Dose-curve simulations assume a healthy 70 kg young adult by default, a "
+    "one-compartment model, first-order absorption for non-IV routes, normal renal "
+    "and CYP activity, and no inhibitors or inducers. They are for exploratory "
+    "comparison only and must not be used for prescribing or self-dosing."
+)
+
 _PUG_PROPERTY_URL = (
     "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/"
     "MolecularWeight,XLogP,TPSA,HBondDonorCount,HBondAcceptorCount,"
     "RotatableBondCount,Charge,CanonicalSMILES,IsomericSMILES/JSON"
 )
+
+_DOSE_UNIT_TO_MG = {
+    "microgram": 0.001,
+    "micrograms": 0.001,
+    "ug": 0.001,
+    "mcg": 0.001,
+    "milligram": 1.0,
+    "milligrams": 1.0,
+    "mg": 1.0,
+    "gram": 1000.0,
+    "grams": 1000.0,
+    "g": 1000.0,
+}
+
+ROUTE_DISPLAY_NAMES = {
+    "oral": "Oral",
+    "sublingual": "Sublingual",
+    "intranasal": "Intranasal",
+    "subcutaneous": "Subcutaneous",
+    "intravenous": "Intravenous",
+}
+
+ACTIVE_METABOLITE_NOTES = {
+    "codeine": {
+        "Active metabolite(s)": "Morphine; codeine-6-glucuronide may also contribute",
+        "Main pathway": "CYP2D6 O-demethylation to morphine; CYP3A4 forms norcodeine",
+        "PK implication": "Parent-codeine concentration is a poor analgesic-effect proxy. IV codeine bypasses gut absorption but does not remove the need for CYP2D6 activation.",
+    },
+    "tramadol": {
+        "Active metabolite(s)": "O-desmethyltramadol (M1)",
+        "Main pathway": "CYP2D6 forms M1; CYP3A4/CYP2B6 form less active N-desmethyltramadol",
+        "PK implication": "Analgesic effect depends partly on active metabolite formation; parent-only curves can misrepresent onset and potency.",
+    },
+    "diazepam": {
+        "Active metabolite(s)": "Nordazepam/desmethyldiazepam, temazepam, oxazepam",
+        "Main pathway": "CYP3A4/CYP2C19 N-demethylation and hydroxylation",
+        "PK implication": "Parent diazepam curve can underestimate total active-moiety duration because active metabolites persist.",
+    },
+    "clopidogrel": {
+        "Active metabolite(s)": "Thiol active metabolite",
+        "Main pathway": "Two-step CYP oxidation, including CYP2C19",
+        "PK implication": "Parent concentration is not a useful antiplatelet-effect proxy; activation is required.",
+    },
+    "prednisone": {
+        "Active metabolite(s)": "Prednisolone",
+        "Main pathway": "Hepatic 11-beta-hydroxysteroid dehydrogenase activation",
+        "PK implication": "Therapeutic effect mainly follows prednisolone exposure rather than parent prednisone exposure.",
+    },
+    "enalapril": {
+        "Active metabolite(s)": "Enalaprilat",
+        "Main pathway": "Esterase hydrolysis",
+        "PK implication": "Prodrug activation is required; route changes can alter the parent-to-active exposure relationship.",
+    },
+    "lisdexamfetamine": {
+        "Active metabolite(s)": "Dextroamphetamine",
+        "Main pathway": "Enzymatic cleavage after absorption, mainly in blood",
+        "PK implication": "Parent concentration is not the desired stimulant-effect curve; active amphetamine formation controls onset.",
+    },
+    "risperidone": {
+        "Active metabolite(s)": "9-hydroxyrisperidone/paliperidone",
+        "Main pathway": "CYP2D6 hydroxylation",
+        "PK implication": "Parent plus active metabolite better represent active moiety than parent alone.",
+    },
+    "fluoxetine": {
+        "Active metabolite(s)": "Norfluoxetine",
+        "Main pathway": "CYP-mediated N-demethylation",
+        "PK implication": "Long-lived active metabolite can dominate duration after repeated dosing; single-dose parent curve is incomplete.",
+    },
+}
 
 
 def _as_float(value: Any, default: float | None = None) -> float | None:
@@ -81,7 +157,8 @@ def _format_number(value: float | int | None, digits: int = 2) -> str:
         return ""
     if isinstance(value, float) and (math.isnan(value) or math.isinf(value)):
         return ""
-    return f"{value:.{digits}f}".rstrip("0").rstrip(".")
+    text = f"{value:.{digits}f}"
+    return text.rstrip("0").rstrip(".") if "." in text else text
 
 
 def _activity_value_to_nm(activity_type: str, value: Any, unit: str) -> float | None:
@@ -355,6 +432,311 @@ def predict_pk_from_descriptors(descriptors: dict[str, Any]) -> dict[str, Any]:
         "half_life_class": half_life_class,
         "applicability": applicability,
     }
+
+
+def dose_to_mg(amount: Any, unit: str) -> float:
+    """Convert a user-entered dose amount to mg."""
+    dose = _as_float(amount, 0.0) or 0.0
+    multiplier = _DOSE_UNIT_TO_MG.get((unit or "mg").strip().lower())
+    if multiplier is None:
+        raise ValueError(f"Unsupported dose unit: {unit}")
+    return max(0.0, dose * multiplier)
+
+
+def _normalize_route(route: str) -> str:
+    text = (route or "oral").strip().lower().replace("-", " ").replace("_", " ")
+    aliases = {
+        "po": "oral",
+        "by mouth": "oral",
+        "sl": "sublingual",
+        "sublingual": "sublingual",
+        "in": "intranasal",
+        "nasal": "intranasal",
+        "intranasal": "intranasal",
+        "sc": "subcutaneous",
+        "subcutaneous": "subcutaneous",
+        "sub cutaneous": "subcutaneous",
+        "iv": "intravenous",
+        "intravenous": "intravenous",
+    }
+    return aliases.get(text, text)
+
+
+def route_parameters(route: str, prediction: dict[str, Any]) -> dict[str, Any]:
+    """Estimate route-specific bioavailability, absorption rate, and lag."""
+    route_key = _normalize_route(route)
+    if route_key not in ROUTE_DISPLAY_NAMES:
+        raise ValueError(f"Unsupported route: {route}")
+
+    fa = _clip(float(prediction.get("fraction_absorbed_pct", 0.0)) / 100.0, 0.01, 0.98)
+    oral_f = _clip(float(prediction.get("oral_bioavailability_pct", 0.0)) / 100.0, 0.01, 0.95)
+    tpsa = float(prediction.get("tpsa", 0.0) or 0.0)
+    rotb = float(prediction.get("rotb", 0.0) or 0.0)
+    mw = float(prediction.get("mw", 0.0) or 0.0)
+    charge = float(prediction.get("charge", 0.0) or 0.0)
+    permeability = _clip(1.15 - max(0.0, tpsa - 75.0) / 220.0 - max(0.0, rotb - 6.0) / 18.0, 0.35, 1.35)
+
+    if route_key == "oral":
+        return {
+            "route": "Oral",
+            "F": oral_f,
+            "ka_h": _clip(1.05 * permeability, 0.25, 2.5),
+            "lag_h": 0.25,
+            "assumption": "GI absorption with first-pass extraction reflected in predicted oral bioavailability.",
+        }
+    if route_key == "sublingual":
+        return {
+            "route": "Sublingual",
+            "F": _clip(0.15 + 0.68 * fa, 0.05, 0.85),
+            "ka_h": _clip(2.4 * permeability, 0.6, 4.0),
+            "lag_h": 0.05,
+            "assumption": "Partial mucosal absorption with partial first-pass bypass; swallowed fraction is not separately modeled.",
+        }
+    if route_key == "intranasal":
+        return {
+            "route": "Intranasal",
+            "F": _clip(0.10 + 0.62 * fa, 0.05, 0.80),
+            "ka_h": _clip(2.0 * permeability, 0.5, 3.5),
+            "lag_h": 0.05,
+            "assumption": "Nasal mucosal absorption proxy; formulation, pH, and local tolerability are not modeled.",
+        }
+    if route_key == "subcutaneous":
+        bioavailability = 0.92 - 0.18 * max(0.0, mw - 800.0) / 800.0 - 0.06 * (abs(charge) >= 2)
+        return {
+            "route": "Subcutaneous",
+            "F": _clip(bioavailability, 0.45, 0.98),
+            "ka_h": _clip(0.45 * permeability, 0.08, 1.2),
+            "lag_h": 0.10,
+            "assumption": "Depot-like first-order absorption; injection-site blood flow and formulation are not modeled.",
+        }
+    return {
+        "route": "Intravenous",
+        "F": 1.0,
+        "ka_h": None,
+        "lag_h": 0.0,
+        "assumption": "Instantaneous IV bolus into central compartment; infusion kinetics are not modeled.",
+    }
+
+
+def _linear_crossing_time(t0: float, c0: float, t1: float, c1: float, threshold: float) -> float:
+    if c1 == c0:
+        return t1
+    return t0 + (threshold - c0) * (t1 - t0) / (c1 - c0)
+
+
+def _threshold_times(times: list[float], concentrations: list[float], threshold: float | None) -> dict[str, Any]:
+    if threshold is None or threshold <= 0:
+        return {"first_h": None, "last_h": None, "duration_h": None}
+
+    first_h = None
+    fall_h = None
+    for idx, concentration in enumerate(concentrations):
+        if concentration >= threshold:
+            if first_h is None:
+                if idx == 0:
+                    first_h = times[idx]
+                else:
+                    first_h = _linear_crossing_time(
+                        times[idx - 1], concentrations[idx - 1], times[idx], concentration, threshold
+                    )
+        elif first_h is not None and idx > 0 and concentrations[idx - 1] >= threshold:
+            fall_h = _linear_crossing_time(times[idx - 1], concentrations[idx - 1], times[idx], concentration, threshold)
+            break
+
+    duration_h = None if first_h is None or fall_h is None else max(0.0, fall_h - first_h)
+    return {"first_h": first_h, "last_h": fall_h, "duration_h": duration_h}
+
+
+def _therapeutic_window_duration(
+    times: list[float], concentrations: list[float], mec_mg_l: float | None, mtc_mg_l: float | None
+) -> float | None:
+    if mec_mg_l is None or mec_mg_l <= 0 or mtc_mg_l is None or mtc_mg_l <= mec_mg_l:
+        return None
+    total = 0.0
+    for idx in range(1, len(times)):
+        c_mid = (concentrations[idx - 1] + concentrations[idx]) / 2.0
+        if mec_mg_l <= c_mid < mtc_mg_l:
+            total += times[idx] - times[idx - 1]
+    return total
+
+
+def simulate_pk_for_route(
+    prediction: dict[str, Any],
+    dose_mg: float,
+    route: str,
+    body_weight_kg: float = 70.0,
+    mec_mg_l: float | None = None,
+    mtc_mg_l: float | None = None,
+    duration_h: float = 24.0,
+    time_step_h: float = 0.05,
+    injection_concentration_mg_ml: float | None = None,
+) -> tuple[pd.DataFrame, dict[str, Any]]:
+    """Simulate a one-compartment concentration-time curve for one route."""
+    route_params = route_parameters(route, prediction)
+    body_weight_kg = max(1.0, float(body_weight_kg or 70.0))
+    dose_mg = max(0.0, float(dose_mg or 0.0))
+    duration_h = max(0.25, float(duration_h or 24.0))
+    time_step_h = _clip(float(time_step_h or 0.05), 0.01, 1.0)
+
+    vd_l_kg = max(0.01, float(prediction.get("vd_l_kg", 0.7) or 0.7))
+    clearance_ml_min_kg = max(0.01, float(prediction.get("clearance_ml_min_kg", 5.0) or 5.0))
+    vd_l = vd_l_kg * body_weight_kg
+    clearance_l_h = clearance_ml_min_kg * 0.06 * body_weight_kg
+    ke_h = clearance_l_h / vd_l
+    half_life_h = math.log(2) / ke_h if ke_h > 0 else None
+    absorbed_dose_mg = route_params["F"] * dose_mg
+
+    steps = int(math.ceil(duration_h / time_step_h))
+    times = [round(idx * time_step_h, 6) for idx in range(steps + 1)]
+    concentrations: list[float] = []
+    ka_h = route_params["ka_h"]
+    lag_h = float(route_params["lag_h"] or 0.0)
+
+    for time_h in times:
+        if dose_mg <= 0:
+            concentration = 0.0
+        elif ka_h is None:
+            concentration = absorbed_dose_mg / vd_l * math.exp(-ke_h * time_h)
+        else:
+            t_eff = time_h - lag_h
+            if t_eff <= 0:
+                concentration = 0.0
+            elif abs(ka_h - ke_h) < 1e-6:
+                concentration = absorbed_dose_mg / vd_l * ka_h * t_eff * math.exp(-ke_h * t_eff)
+            else:
+                concentration = (
+                    absorbed_dose_mg
+                    * ka_h
+                    / (vd_l * (ka_h - ke_h))
+                    * (math.exp(-ke_h * t_eff) - math.exp(-ka_h * t_eff))
+                )
+        concentrations.append(max(0.0, concentration))
+
+    cmax_mg_l = max(concentrations)
+    tmax_h = times[concentrations.index(cmax_mg_l)]
+    auc_0_inf_mg_h_l = absorbed_dose_mg / clearance_l_h if clearance_l_h > 0 else None
+    auc_last = sum(
+        (concentrations[idx - 1] + concentrations[idx]) / 2.0 * (times[idx] - times[idx - 1])
+        for idx in range(1, len(times))
+    )
+    mec_times = _threshold_times(times, concentrations, mec_mg_l)
+    mtc_times = _threshold_times(times, concentrations, mtc_mg_l)
+    therapeutic_duration_h = _therapeutic_window_duration(times, concentrations, mec_mg_l, mtc_mg_l)
+    volume_to_administer_ml = None
+    concentration = _as_float(injection_concentration_mg_ml)
+    if concentration and concentration > 0 and route_params["route"] in {"Intravenous", "Subcutaneous"}:
+        volume_to_administer_ml = dose_mg / concentration
+
+    curve = pd.DataFrame(
+        {
+            "Route": route_params["route"],
+            "Time (h)": times,
+            "Concentration (mg/L)": concentrations,
+        }
+    )
+    summary = {
+        "Route": route_params["route"],
+        "Dose (mg)": dose_mg,
+        "Bioavailability F": route_params["F"],
+        "Absorption ka (1/h)": ka_h,
+        "Lag time (h)": lag_h,
+        "Vd (L/kg)": vd_l_kg,
+        "CL (mL/min/kg)": clearance_ml_min_kg,
+        "ke (1/h)": ke_h,
+        "Half-life (h)": half_life_h,
+        "Cmax (mg/L)": cmax_mg_l,
+        "Tmax (h)": tmax_h,
+        "AUC 0-inf (mg*h/L)": auc_0_inf_mg_h_l,
+        "AUC 0-last (mg*h/L)": auc_last,
+        "Onset to MEC (h)": mec_times["first_h"],
+        "Falls below MEC (h)": mec_times["last_h"],
+        "Duration above MEC (h)": mec_times["duration_h"],
+        "Therapeutic-window duration (h)": therapeutic_duration_h,
+        "First exceeds MTC (h)": mtc_times["first_h"],
+        "Time above MTC (h)": mtc_times["duration_h"],
+        "Injection concentration (mg/mL)": concentration,
+        "Volume to administer (mL)": volume_to_administer_ml,
+        "Assumption": route_params["assumption"],
+    }
+    return curve, summary
+
+
+def simulate_pk_curves(
+    prediction: dict[str, Any],
+    dose_amount: Any,
+    dose_unit: str,
+    routes: list[str] | tuple[str, ...],
+    body_weight_kg: float = 70.0,
+    mec_mg_l: float | None = None,
+    mtc_mg_l: float | None = None,
+    duration_h: float = 24.0,
+    injection_concentration_mg_ml: float | None = None,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Simulate concentration-time curves for one or more routes."""
+    dose_mg = dose_to_mg(dose_amount, dose_unit)
+    selected_routes = list(routes) or ["Oral"]
+    curves = []
+    summaries = []
+    for route in selected_routes:
+        curve, summary = simulate_pk_for_route(
+            prediction,
+            dose_mg=dose_mg,
+            route=route,
+            body_weight_kg=body_weight_kg,
+            mec_mg_l=mec_mg_l if mec_mg_l and mec_mg_l > 0 else None,
+            mtc_mg_l=mtc_mg_l if mtc_mg_l and mtc_mg_l > 0 else None,
+            duration_h=duration_h,
+            injection_concentration_mg_ml=injection_concentration_mg_ml,
+        )
+        curves.append(curve)
+        summaries.append(summary)
+    curve_df = pd.concat(curves, ignore_index=True) if curves else pd.DataFrame()
+    summary_df = pd.DataFrame(summaries)
+    return curve_df, summary_df
+
+
+def active_metabolite_notes_for_compound(compound_name: str) -> pd.DataFrame:
+    """Return curated active-metabolite caveats for common examples."""
+    name = (compound_name or "").strip().casefold()
+    note = ACTIVE_METABOLITE_NOTES.get(name)
+    if note is None:
+        note = {
+            "Active metabolite(s)": "No curated active-metabolite model available",
+            "Main pathway": "Unknown from the current lightweight rules",
+            "PK implication": "The concentration-time curve is parent-compound only. If efficacy depends on an active metabolite or prodrug activation, the therapeutic-effect curve may differ substantially.",
+        }
+    return pd.DataFrame([{ "Compound": compound_name or "Compound", **note }])
+
+
+def pk_formula_markdown() -> str:
+    """LaTeX formulas shown in the notebook for the simulated PK model."""
+    return r"""
+**One-compartment simulation formulas**
+
+Elimination and half-life:
+
+$$k_e = \frac{CL}{V_d}$$
+
+$$t_{1/2} = \frac{\ln(2)}{k_e}$$
+
+IV bolus concentration:
+
+$$C(t) = \frac{F \cdot Dose}{V_d} e^{-k_e t},\quad F=1$$
+
+First-order absorption for oral, sublingual, intranasal, and subcutaneous routes:
+
+$$C(t) = \frac{F \cdot Dose \cdot k_a}{V_d(k_a-k_e)}\left(e^{-k_e(t-t_{lag})} - e^{-k_a(t-t_{lag})}\right)$$
+
+Exposure:
+
+$$AUC_{0-\infty} = \frac{F \cdot Dose}{CL}$$
+
+Injection volume, when a concentration is supplied:
+
+$$Volume\ to\ administer = \frac{Prescribed\ dose}{Concentration}$$
+
+Onset is the first time the predicted concentration reaches the entered MEC. Duration is the time above MEC; if MTC is supplied, the table also reports time above MTC and time inside the approximate therapeutic window.
+""".strip()
 
 
 def pk_profile_from_descriptors(descriptors: dict[str, Any], label: str = "Compound") -> pd.DataFrame:

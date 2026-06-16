@@ -1,10 +1,12 @@
 import unittest
 
 from chembl_bioactivity_enhanced import (
+    active_metabolite_notes_for_compound,
     clean_activity_df,
     filter_by_threshold,
     pk_profile_from_descriptors,
     predict_pk_from_descriptors,
+    simulate_pk_curves,
 )
 
 
@@ -74,6 +76,58 @@ class PharmacokineticPredictionTests(unittest.TestCase):
         self.assertIn("Predicted terminal half-life", set(df["Parameter"]))
         self.assertIn("Evidence / formula", df.columns)
         self.assertIn("Confidence", df.columns)
+
+    def test_profile_format_keeps_zero_and_trailing_zero_values(self):
+        df = pk_profile_from_descriptors(
+            {
+                "MolecularWeight": 284.74,
+                "XLogP": 3.0,
+                "TPSA": 32.7,
+                "HBondDonorCount": 0,
+                "HBondAcceptorCount": 2,
+                "RotatableBondCount": 1,
+                "Charge": 0,
+            }
+        )
+
+        hbd = df.loc[df["Parameter"] == "H-bond donors", "Estimate"].iloc[0]
+        absorbed = df.loc[df["Parameter"] == "Predicted fraction absorbed orally", "Estimate"].iloc[0]
+
+        self.assertEqual(hbd, "0")
+        self.assertGreaterEqual(float(absorbed), 80)
+
+    def test_simulation_returns_route_summary_and_curve(self):
+        prediction = predict_pk_from_descriptors(
+            {
+                "MolecularWeight": 310,
+                "XLogP": 2.2,
+                "TPSA": 65,
+                "HBondDonorCount": 1,
+                "HBondAcceptorCount": 4,
+                "RotatableBondCount": 4,
+                "Charge": 0,
+            }
+        )
+        curve, summary = simulate_pk_curves(
+            prediction,
+            dose_amount=10,
+            dose_unit="milligram",
+            routes=["Oral", "Intravenous"],
+            mec_mg_l=0.01,
+            mtc_mg_l=1.0,
+            injection_concentration_mg_ml=5,
+        )
+
+        self.assertEqual(set(summary["Route"]), {"Oral", "Intravenous"})
+        self.assertGreater(summary.loc[summary["Route"] == "Intravenous", "Cmax (mg/L)"].iloc[0], 0)
+        self.assertEqual(summary.loc[summary["Route"] == "Intravenous", "Volume to administer (mL)"].iloc[0], 2)
+        self.assertIn("Concentration (mg/L)", curve.columns)
+
+    def test_active_metabolite_notes_include_codeine_caveat(self):
+        df = active_metabolite_notes_for_compound("codeine")
+
+        self.assertIn("Morphine", df.loc[0, "Active metabolite(s)"])
+        self.assertIn("CYP2D6", df.loc[0, "Main pathway"])
 
 
 class ActivityCleanupTests(unittest.TestCase):

@@ -17,7 +17,16 @@
 # * Experimental properties are heterogeneous; availability varies.
 # * This cell only builds the UI; no network calls occur until you press "Search".
 
-from chembl_bioactivity_enhanced import PK_ESTIMATE_NOTE, pk_profile_for_compound
+from chembl_bioactivity_enhanced import (
+    PK_ESTIMATE_NOTE,
+    PK_SIMULATION_NOTE,
+    active_metabolite_notes_for_compound,
+    descriptors_from_pubchem_cid,
+    pk_formula_markdown,
+    pk_profile_from_descriptors,
+    predict_pk_from_descriptors,
+    simulate_pk_curves,
+)
 import io, base64, json, re, requests, contextlib, warnings, time, unicodedata
 from urllib.parse import quote
 import pandas as pd
@@ -70,6 +79,7 @@ def _silent_import_rdkit():
 
 _PCP, _pcp_msg = _silent_import("pubchempy")
 _P3D, _p3d_msg = _silent_import("py3Dmol")
+_MPL, _mpl_msg = _silent_import("matplotlib.pyplot")
 _RDKIT, _rdkit_msg = _silent_import_rdkit()
 
 if _RDKIT:
@@ -79,6 +89,8 @@ if _PCP:
     import pubchempy as pcp
 if _P3D:
     import py3Dmol
+if _MPL:
+    import matplotlib.pyplot as plt
 
 # ----------------------------
 # Robust PubChem networking for Binder/Voila
@@ -232,7 +244,10 @@ def pubchem_basic_props_df(cid: int) -> pd.DataFrame:
             ]
             df = pcp.get_properties(props, cid, as_dataframe=True)
             df.insert(0, 'Source', 'PubChem (computed)')
-            tidy = df.T.reset_index().rename(columns={'index': 'Property', 0: 'Value'})
+            tidy = df.T.reset_index().rename(columns={'index': 'Property'})
+            value_cols = [col for col in tidy.columns if col != 'Property']
+            if value_cols:
+                tidy = tidy.rename(columns={value_cols[0]: 'Value'})
             return tidy
         except Exception:
             pass
@@ -463,6 +478,62 @@ def make_download_link(df: pd.DataFrame, filename: str, filetype: str = "csv", s
     b64 = base64.b64encode(data.encode() if isinstance(data, str) else data).decode()
     return f'<a download="{filename}" href="data:{mime};base64,{b64}">⬇️ Download {filename}</a>'
 
+def value_from_property_df(df: pd.DataFrame, *property_names: str):
+    if df is None or df.empty or "Property" not in df.columns or "Value" not in df.columns:
+        return None
+    wanted = {name.casefold() for name in property_names}
+    hits = df[df["Property"].astype(str).str.casefold().isin(wanted)]
+    if hits.empty:
+        return None
+    value = hits.iloc[0]["Value"]
+    return None if pd.isna(value) else str(value)
+
+def format_pk_simulation_summary(df: pd.DataFrame) -> pd.DataFrame:
+    if df is None or df.empty:
+        return pd.DataFrame()
+    columns = [
+        "Route",
+        "Dose (mg)",
+        "Bioavailability F",
+        "Absorption ka (1/h)",
+        "Lag time (h)",
+        "Cmax (mg/L)",
+        "Tmax (h)",
+        "AUC 0-inf (mg*h/L)",
+        "Half-life (h)",
+        "Onset to MEC (h)",
+        "Falls below MEC (h)",
+        "Duration above MEC (h)",
+        "Therapeutic-window duration (h)",
+        "First exceeds MTC (h)",
+        "Time above MTC (h)",
+        "Volume to administer (mL)",
+        "Assumption",
+    ]
+    out = df[[col for col in columns if col in df.columns]].copy()
+    numeric_cols = [col for col in out.columns if col != "Assumption" and col != "Route"]
+    for col in numeric_cols:
+        out[col] = pd.to_numeric(out[col], errors="coerce").round(3)
+    return out.fillna("")
+
+def plot_pk_curves(curve_df: pd.DataFrame, mec_mg_l: float | None = None, mtc_mg_l: float | None = None):
+    if not _MPL or curve_df is None or curve_df.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    for route, route_df in curve_df.groupby("Route"):
+        ax.plot(route_df["Time (h)"], route_df["Concentration (mg/L)"], label=route, linewidth=2)
+    if mec_mg_l and mec_mg_l > 0:
+        ax.axhline(mec_mg_l, color="green", linestyle="--", linewidth=1.4, label="MEC")
+    if mtc_mg_l and mtc_mg_l > 0:
+        ax.axhline(mtc_mg_l, color="red", linestyle="--", linewidth=1.4, label="MTC")
+    ax.set_title("Predicted concentration-time curve")
+    ax.set_xlabel("Time (h)")
+    ax.set_ylabel("Concentration (mg/L)")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best")
+    fig.tight_layout()
+    return fig
+
 # ----------------------------
 # Interactive UI
 # ----------------------------
@@ -498,11 +569,64 @@ def interactive_mode():
         description='CSV separator:',
         layout=widgets.Layout(width='240px')
     )
+    dose_amount = widgets.FloatText(
+        value=10.0,
+        description='Dose:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='180px')
+    )
+    dose_unit = widgets.Dropdown(
+        options=[('micrograms', 'microgram'), ('milligrams', 'milligram'), ('grams', 'gram')],
+        value='milligram',
+        description='Unit:',
+        layout=widgets.Layout(width='190px')
+    )
+    body_weight = widgets.FloatText(
+        value=70.0,
+        description='Body weight kg:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='220px')
+    )
+    route_select = widgets.SelectMultiple(
+        options=['Oral', 'Sublingual', 'Intranasal', 'Subcutaneous', 'Intravenous'],
+        value=['Oral'],
+        description='PK routes',
+        layout=widgets.Layout(width='260px', height='120px')
+    )
+    mec_input = widgets.FloatText(
+        value=0.0,
+        description='MEC mg/L:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='190px')
+    )
+    mtc_input = widgets.FloatText(
+        value=0.0,
+        description='MTC mg/L:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='190px')
+    )
+    duration_input = widgets.FloatText(
+        value=24.0,
+        description='Curve hours:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='200px')
+    )
+    injection_conc = widgets.FloatText(
+        value=0.0,
+        description='Injection mg/mL:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='230px')
+    )
     run_btn = widgets.Button(description="Search", button_style='primary')
     out = widgets.Output()
 
     controls = widgets.HBox([text, run_btn])
     filters  = widgets.HBox([act_filter, sort_col, sort_asc, sep_choice])
+    pk_controls = widgets.VBox([
+        widgets.HBox([dose_amount, dose_unit, body_weight, duration_input]),
+        widgets.HBox([route_select, widgets.VBox([mec_input, mtc_input, injection_conc])]),
+        widgets.HTML("<em>MEC/MTC are optional concentration thresholds in mg/L. Use 0 when unknown.</em>"),
+    ])
 
     def on_click(_):
         with out:
@@ -558,23 +682,66 @@ def interactive_mode():
                 show(df_basic, classes="display compact cell-border", maxBytes=0, pageLength=50)
                 display(HTML(make_download_link(df_basic, "pubchem_basic.csv", "csv", sep=sep_choice.value)))
 
-            # SMILES for RDKit rendering and predicted PK descriptors.
-            smiles = None
-            if _PCP:
-                try:
-                    comps = pcp.get_compounds([cid], 'cid')
-                    if comps:
-                        smiles = comps[0].isomeric_smiles or comps[0].canonical_smiles
-                except Exception:
-                    smiles = None
+            # SMILES for RDKit rendering and predicted PK descriptors. Avoid deprecated PubChemPy accessors.
+            smiles = value_from_property_df(
+                df_basic,
+                "IsomericSMILES",
+                "CanonicalSMILES",
+                "Isomeric SMILES",
+                "Canonical SMILES",
+            )
+            descriptors = descriptors_from_pubchem_cid(cid, smiles=smiles)
+            smiles = smiles or descriptors.get("IsomericSMILES") or descriptors.get("CanonicalSMILES")
 
             display(Markdown("#### Predicted Pharmacokinetics (structure-based)"))
-            df_pk = pk_profile_for_compound(cid, smiles=smiles)
+            df_pk = pk_profile_from_descriptors(descriptors, label=f"PubChem CID {cid}")
             if not df_pk.empty:
                 show(df_pk, classes="display compact cell-border", maxBytes=0, pageLength=50)
                 display(HTML(make_download_link(df_pk, "predicted_pharmacokinetics.csv", "csv", sep=sep_choice.value)))
                 display(HTML(make_download_link(df_pk, "predicted_pharmacokinetics.xlsx", "xlsx")))
             display(Markdown(f"> {PK_ESTIMATE_NOTE}"))
+
+            display(Markdown("#### Dose and Route Simulation"))
+            if not descriptors:
+                display(Markdown("> PK simulation unavailable because PubChem/RDKit descriptors were not available."))
+            else:
+                try:
+                    pk_prediction = predict_pk_from_descriptors(descriptors)
+                    mec = mec_input.value if mec_input.value and mec_input.value > 0 else None
+                    mtc = mtc_input.value if mtc_input.value and mtc_input.value > 0 else None
+                    curve_df, sim_summary = simulate_pk_curves(
+                        pk_prediction,
+                        dose_amount=dose_amount.value,
+                        dose_unit=dose_unit.value,
+                        routes=list(route_select.value),
+                        body_weight_kg=body_weight.value,
+                        mec_mg_l=mec,
+                        mtc_mg_l=mtc,
+                        duration_h=duration_input.value,
+                        injection_concentration_mg_ml=injection_conc.value,
+                    )
+                    fig = plot_pk_curves(curve_df, mec_mg_l=mec, mtc_mg_l=mtc)
+                    if fig is not None:
+                        display(fig)
+                        plt.close(fig)
+                    else:
+                        display(Markdown("> Matplotlib is unavailable; showing simulation tables only."))
+
+                    sim_display = format_pk_simulation_summary(sim_summary)
+                    if not sim_display.empty:
+                        show(sim_display, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                        display(HTML(make_download_link(sim_display, "pk_simulation_summary.csv", "csv", sep=sep_choice.value)))
+                        display(HTML(make_download_link(curve_df, "pk_concentration_curve.csv", "csv", sep=sep_choice.value)))
+                    if mec is None:
+                        display(Markdown("> Enter an MEC above 0 mg/L to calculate onset and duration above MEC."))
+                    display(Markdown(f"> {PK_SIMULATION_NOTE}"))
+                    display(Markdown(pk_formula_markdown()))
+                except Exception as e:
+                    display(Markdown(f"**PK simulation error:** {e}"))
+
+            display(Markdown("#### Active Metabolite / Prodrug Caveat"))
+            df_metabolite = active_metabolite_notes_for_compound(compound)
+            show(df_metabolite, classes="display compact cell-border", maxBytes=0, pageLength=50)
 
             # 2D structure
             display(Markdown("#### 2D Structure"))
@@ -608,7 +775,7 @@ def interactive_mode():
                 display(Markdown("> No experimental/computed properties found (or parse failed)."))
 
     run_btn.on_click(on_click)
-    display(widgets.VBox([controls, filters, out]))
+    display(widgets.VBox([controls, filters, pk_controls, out]))
 
 if __name__ == "__main__":
     interactive_mode()

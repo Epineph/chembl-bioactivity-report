@@ -47,12 +47,28 @@ bioavailability potential, BBB penetration tendency, volume of distribution,
 clearance, and terminal half-life from molecular descriptors such as MW, logP,
 TPSA, H-bond donors/acceptors, rotatable bonds, and formal charge.
 
+The app also includes a dose/route simulator for exploratory concentration-time
+curves. You can enter a dose in micrograms, milligrams, or grams; choose oral,
+sublingual, intranasal, subcutaneous, and/or intravenous routes; enter optional
+MEC/MTC thresholds in mg/L; and enter an injection concentration in mg/mL to
+calculate `Volume to administer = Prescribed dose / Concentration` for IV or
+subcutaneous routes. The simulator reports Cmax, Tmax, AUC, half-life, onset to
+MEC, duration above MEC, time above MTC, and route-specific assumptions. It also
+adds a small curated active-metabolite/prodrug caveat table for common examples
+such as codeine, diazepam, tramadol, clopidogrel, prednisone, and enalapril.
+
 These are screening estimates for hypothesis generation, not clinical dosing or
 safety guidance. The most evidence-aligned pieces are descriptor rules such as
 Lipinski RO5, Veber oral exposure criteria, and the Clark-style logBB
 relationship using logP and polar surface area. Clearance and half-life are
 lower-confidence heuristics because accurate values usually require in vitro
 metabolism/transport data or human/animal PK observations.
+
+The concentration curves use a one-compartment model with first-order absorption
+for non-IV routes and IV bolus kinetics for the intravenous route. They assume a
+healthy young adult with normal renal and CYP activity and no major enzyme
+inducers or inhibitors. These outputs are not dosing, prescribing, or safety
+guidance.
 
 You can also call the estimator directly from Python:
 
@@ -78,7 +94,7 @@ micromamba create -n chembl-bioactivity -c conda-forge \
   python=3.11 \
   "numpy<2" \
   rdkit \
-  chembl-webresource-client pandas tabulate ipywidgets itables openpyxl \
+  chembl-webresource-client pandas tabulate ipywidgets itables openpyxl matplotlib \
   requests pubchempy py3Dmol pillow -y
 
 # Register a Jupyter kernel for the new env
@@ -90,7 +106,7 @@ python -m ipykernel install --user --name chembl-bioactivity --display-name "Pyt
 ### Install some dependencies
 
 ```bash
-python -m pip install rdkit numpy pandas jupyterlab ipykernel ipywidgets itables pillow openpyxl voila
+python -m pip install rdkit numpy pandas matplotlib jupyterlab ipykernel ipywidgets itables pillow openpyxl voila
 # If using mamba or conda rather than micromamba, use that instead
 # Alternatively, use pip to install all the packages
 micromamba install -c conda-forge chembl-webresource-client pubchempy py3Dmol tabulate
@@ -100,7 +116,7 @@ micromamba install -c conda-forge chembl-webresource-client pubchempy py3Dmol ta
 Some users may have to include _python3_ instead of _python_ in the command, so:
 
 ```bash
-python3 -m pip install rdkit numpy pandas jupyterlab ipykernel ipywidgets itables pillow openpyxl voila chembl-webresource-client pubchempy py3Dmol tabulate
+python3 -m pip install rdkit numpy pandas matplotlib jupyterlab ipykernel ipywidgets itables pillow openpyxl voila chembl-webresource-client pubchempy py3Dmol tabulate
 ```
 
 Then just launch jupyter lab (or use the binder badge above) locally:

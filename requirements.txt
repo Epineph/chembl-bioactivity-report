@@ -13,3 +13,4 @@ pubchempy
 py3Dmol
 tabulate
 voila
+matplotlib

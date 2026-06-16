@@ -12,6 +12,7 @@ dependencies:
   - ipywidgets>=8
   - itables>=2.0
   - pillow
+  - matplotlib
   - openpyxl
   - voila>=0.5
   - pip
