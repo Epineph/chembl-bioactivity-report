@@ -8,6 +8,7 @@ trial data while still making the uncertainty visible.
 
 from __future__ import annotations
 
+import base64
 import html
 import io
 import math
@@ -1202,6 +1203,27 @@ def _section_dataframe(section: dict[str, Any], row_limit: int | None) -> pd.Dat
     return limited_report_dataframe(section.get("df"), row_limit=row_limit)
 
 
+def _section_images(section: dict[str, Any]) -> list[dict[str, Any]]:
+    images = section.get("images") or []
+    if section.get("image"):
+        images = [section["image"], *images]
+    normalized = []
+    for image in images:
+        data = image.get("data") if isinstance(image, dict) else None
+        if isinstance(data, str):
+            data = data.encode("utf-8")
+        if not data:
+            continue
+        normalized.append(
+            {
+                "title": str(image.get("title") or "Figure") if isinstance(image, dict) else "Figure",
+                "data": data,
+                "mime": str(image.get("mime") or "image/png") if isinstance(image, dict) else "image/png",
+            }
+        )
+    return normalized
+
+
 def build_interactive_html_report(title: str, sections: list[dict[str, Any]], row_limit: Any = 50) -> str:
     """Build a self-contained HTML report with collapsible table sections."""
     limit = report_row_limit(row_limit)
@@ -1221,6 +1243,8 @@ def build_interactive_html_report(title: str, sections: list[dict[str, Any]], ro
         "th,td{border:1px solid #d6dbdf;padding:.35rem .45rem;vertical-align:top}",
         "th{background:#eaf2f8;text-align:left;position:sticky;top:0}",
         "tr:nth-child(even){background:#f8f9f9}",
+        ".report-image{margin:.8rem 0 1rem}",
+        ".report-image img{max-width:100%;height:auto;border:1px solid #d5d8dc;border-radius:6px;background:white}",
         ".note{color:#566573;margin:.4rem 0}",
         ".small{font-size:.82rem;color:#5d6d7e}",
         "@media print{details{break-inside:avoid} summary{cursor:default} body{margin:1cm}}",
@@ -1235,18 +1259,29 @@ def build_interactive_html_report(title: str, sections: list[dict[str, Any]], ro
 
     for section in sections:
         df = _section_dataframe(section, limit)
-        if df.empty:
+        images = _section_images(section)
+        if df.empty and not images:
             continue
         section_title = html.escape(str(section.get("title") or "Table"))
         original_rows = len(section.get("df")) if section.get("df") is not None else len(df)
         shown_rows = len(df)
         note = section.get("note")
         open_attr = " open" if section.get("open", True) else ""
+        table_meta = f" <span class=\"small\">({shown_rows} of {original_rows} rows)</span>" if not df.empty else ""
         body.append(f"<details{open_attr}>")
-        body.append(f"<summary>{section_title} <span class=\"small\">({shown_rows} of {original_rows} rows)</span></summary>")
+        body.append(f"<summary>{section_title}{table_meta}</summary>")
         if note:
             body.append(f"<div class=\"note\">{html.escape(str(note))}</div>")
-        body.append(df.to_html(index=False, escape=True, border=0))
+        for image in images:
+            b64 = base64.b64encode(image["data"]).decode("ascii")
+            image_title = html.escape(image["title"])
+            mime = html.escape(image["mime"])
+            body.append(
+                f'<figure class="report-image"><img src="data:{mime};base64,{b64}" alt="{image_title}">'
+                f'<figcaption class="small">{image_title}</figcaption></figure>'
+            )
+        if not df.empty:
+            body.append(df.to_html(index=False, escape=True, border=0))
         body.append("</details>")
 
     body.append(
@@ -1277,7 +1312,8 @@ def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any 
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import cm
-    from reportlab.platypus import Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.lib.utils import ImageReader
+    from reportlab.platypus import Image as PdfImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
 
     limit = report_row_limit(row_limit)
     buf = io.BytesIO()
@@ -1296,36 +1332,51 @@ def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any 
 
     for section in sections:
         df = _section_dataframe(section, limit)
-        if df.empty:
+        images = _section_images(section)
+        if df.empty and not images:
             continue
         section_title = str(section.get("title") or "Table")
         original_rows = len(section.get("df")) if section.get("df") is not None else len(df)
-        story.append(Paragraph(html.escape(f"{section_title} ({len(df)} of {original_rows} rows)"), styles["Heading2"]))
+        table_meta = f" ({len(df)} of {original_rows} rows)" if not df.empty else ""
+        story.append(Paragraph(html.escape(f"{section_title}{table_meta}"), styles["Heading2"]))
         if section.get("note"):
             story.append(Paragraph(html.escape(str(section["note"])), styles["BodyText"]))
 
-        columns = list(df.columns)
-        data = [[_pdf_cell(col) for col in columns]]
-        for _, row in df.iterrows():
-            data.append([_pdf_cell(row.get(col, "")) for col in columns])
-        col_count = max(1, len(columns))
-        table = Table(data, repeatRows=1, colWidths=[doc.width / col_count] * col_count)
-        table.setStyle(
-            TableStyle(
-                [
-                    ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D6EAF8")),
-                    ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
-                    ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#AAB7B8")),
-                    ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                    ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9F9")]),
-                    ("LEFTPADDING", (0, 0), (-1, -1), 2),
-                    ("RIGHTPADDING", (0, 0), (-1, -1), 2),
-                    ("TOPPADDING", (0, 0), (-1, -1), 2),
-                    ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
-                ]
+        for image in images:
+            try:
+                image_buf = io.BytesIO(image["data"])
+                width_px, height_px = ImageReader(image_buf).getSize()
+                scale = min(doc.width / width_px, (10.5 * cm) / height_px, 1.0)
+                image_buf.seek(0)
+                story.append(PdfImage(image_buf, width=width_px * scale, height=height_px * scale))
+                story.append(Paragraph(html.escape(image["title"]), styles["BodyText"]))
+                story.append(Spacer(1, 0.2 * cm))
+            except Exception:
+                continue
+
+        if not df.empty:
+            columns = list(df.columns)
+            data = [[_pdf_cell(col) for col in columns]]
+            for _, row in df.iterrows():
+                data.append([_pdf_cell(row.get(col, "")) for col in columns])
+            col_count = max(1, len(columns))
+            table = Table(data, repeatRows=1, colWidths=[doc.width / col_count] * col_count)
+            table.setStyle(
+                TableStyle(
+                    [
+                        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#D6EAF8")),
+                        ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
+                        ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#AAB7B8")),
+                        ("VALIGN", (0, 0), (-1, -1), "TOP"),
+                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9F9")]),
+                        ("LEFTPADDING", (0, 0), (-1, -1), 2),
+                        ("RIGHTPADDING", (0, 0), (-1, -1), 2),
+                        ("TOPPADDING", (0, 0), (-1, -1), 2),
+                        ("BOTTOMPADDING", (0, 0), (-1, -1), 2),
+                    ]
+                )
             )
-        )
-        story.append(table)
+            story.append(table)
         story.append(Spacer(1, 0.35 * cm))
 
     story.append(Paragraph("Disclaimer: PK estimates are approximate screening values and must not be used for prescribing, self-dosing, or clinical safety decisions.", styles["BodyText"]))

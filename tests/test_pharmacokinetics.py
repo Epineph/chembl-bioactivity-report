@@ -1,3 +1,4 @@
+import io
 import unittest
 
 import pandas as pd
@@ -274,6 +275,13 @@ class ActivityCleanupTests(unittest.TestCase):
 
 
 class ReportExportTests(unittest.TestCase):
+    def _tiny_png(self):
+        from PIL import Image
+
+        buf = io.BytesIO()
+        Image.new("RGB", (4, 4), "white").save(buf, format="PNG")
+        return buf.getvalue()
+
     def test_report_row_limit_normalizes_widget_values(self):
         self.assertEqual(report_row_limit(25), 25)
         self.assertEqual(report_row_limit("10"), 10)
@@ -306,6 +314,21 @@ class ReportExportTests(unittest.TestCase):
         self.assertNotIn("row-c", html_report)
         self.assertIn("(2 of 3 rows)", html_report)
 
+    def test_html_report_embeds_image_sections(self):
+        html_report = build_interactive_html_report(
+            "Compound Test",
+            [
+                {
+                    "title": "PK Curve",
+                    "images": [{"title": "Concentration curve", "data": self._tiny_png(), "mime": "image/png"}],
+                }
+            ],
+        )
+
+        self.assertIn("PK Curve", html_report)
+        self.assertIn("Concentration curve", html_report)
+        self.assertIn("data:image/png;base64,", html_report)
+
     def test_pdf_report_builds_pdf_bytes_when_reportlab_is_available(self):
         try:
             import reportlab  # noqa: F401
@@ -314,7 +337,14 @@ class ReportExportTests(unittest.TestCase):
 
         df = pd.DataFrame({"Name": ["row-a", "row-b", "row-c"], "Value": [1, 2, 3]})
 
-        pdf = build_pdf_report("Compound Test", [{"title": "Results", "df": df}], row_limit=2)
+        pdf = build_pdf_report(
+            "Compound Test",
+            [
+                {"title": "Results", "df": df},
+                {"title": "PK Curve", "images": [{"title": "Concentration curve", "data": self._tiny_png()}]},
+            ],
+            row_limit=2,
+        )
 
         self.assertTrue(pdf.startswith(b"%PDF-"))
         self.assertGreater(len(pdf), 1000)

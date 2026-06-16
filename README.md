@@ -88,12 +88,13 @@ metabolism for arbitrary molecules.
 
 The app keeps individual CSV/XLSX downloads and also creates two summary reports:
 
-- PDF report for printable table summaries.
-- Standalone HTML report with clickable/collapsible sections.
+- PDF report for printable table and static graph summaries.
+- Standalone HTML report with clickable/collapsible sections and embedded static graphs.
 
 Use the `Report rows/table` control to choose how many rows each displayed table
 and report section should include. Dense concentration-time curves remain CSV
-downloads rather than full report tables.
+downloads rather than full report tables. The current report graphs are embedded
+as PNG images, which work in both PDF and standalone HTML.
 
 ## Repository Layout
 

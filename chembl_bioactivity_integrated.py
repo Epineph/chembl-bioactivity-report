@@ -497,6 +497,16 @@ def safe_report_filename(compound: str, extension: str) -> str:
     slug = re.sub(r"[^A-Za-z0-9._-]+", "_", compound or "compound").strip("_") or "compound"
     return f"{slug}_chembl_pk_report.{extension}"
 
+def figure_png_bytes(fig) -> bytes | None:
+    if fig is None:
+        return None
+    try:
+        buf = io.BytesIO()
+        fig.savefig(buf, format="png", dpi=160, bbox_inches="tight", facecolor="white")
+        return buf.getvalue()
+    except Exception:
+        return None
+
 def display_report_downloads(compound: str, sections: list[dict], row_limit):
     if not sections:
         return
@@ -922,6 +932,14 @@ def interactive_mode():
                     )
                     fig = plot_pk_curves(curve_df, mec_mg_l=mec, mtc_mg_l=mtc)
                     if fig is not None:
+                        fig_png = figure_png_bytes(fig)
+                        if fig_png:
+                            report_sections.append(
+                                {
+                                    "title": "Predicted Concentration-Time Curve",
+                                    "images": [{"title": "Predicted concentration-time curve", "data": fig_png, "mime": "image/png"}],
+                                }
+                            )
                         display(fig)
                         plt.close(fig)
                     else:
@@ -950,6 +968,14 @@ def interactive_mode():
                         display(Markdown("##### Active Metabolite / Active-Moiety Curve"))
                         metabolite_fig = plot_active_metabolite_curves(metabolite_curve_df)
                         if metabolite_fig is not None:
+                            metabolite_png = figure_png_bytes(metabolite_fig)
+                            if metabolite_png:
+                                report_sections.append(
+                                    {
+                                        "title": "Active Metabolite / Active-Moiety Curve",
+                                        "images": [{"title": "Active metabolite / active-moiety approximation", "data": metabolite_png, "mime": "image/png"}],
+                                    }
+                                )
                             display(metabolite_fig)
                             plt.close(metabolite_fig)
                         if not metabolite_summary_df.empty:
