@@ -66,12 +66,14 @@ Elimination half-life is compound/system dependent and generally does not change
 by route in the current one-compartment model. Route effects are shown through:
 
 - absorption half-life
+- apparent terminal half-life when absorption is slower than elimination
 - Tmax
 - onset and duration above MEC
 - post-peak 50% decline time
 
 Slow absorption can make the apparent post-peak decline longer than the intrinsic
-elimination half-life.
+elimination half-life. In flip-flop cases, the terminal slope is absorption
+limited rather than elimination limited.
 
 ## Active Metabolites
 

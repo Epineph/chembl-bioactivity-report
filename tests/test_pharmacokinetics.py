@@ -10,7 +10,10 @@ from chembl_bioactivity_enhanced import (
     clean_activity_df,
     estimate_exposure_thresholds,
     filter_by_threshold,
+    has_complete_pk_descriptors,
     limited_report_dataframe,
+    merge_pk_descriptor_fallback,
+    missing_pk_descriptor_names,
     pk_estimate_formula_items,
     pk_profile_from_descriptors,
     predict_pk_from_descriptors,
@@ -106,6 +109,50 @@ class PharmacokineticPredictionTests(unittest.TestCase):
         self.assertEqual(hbd, "0")
         self.assertGreaterEqual(float(absorbed), 80)
 
+    def test_descriptor_completeness_treats_zero_as_present(self):
+        descriptors = {
+            "MolecularWeight": 300,
+            "XLogP": 0,
+            "TPSA": 0,
+            "HBondDonorCount": 0,
+            "HBondAcceptorCount": 0,
+            "RotatableBondCount": 0,
+            "FormalCharge": 0,
+        }
+
+        self.assertTrue(has_complete_pk_descriptors(descriptors))
+        self.assertFalse(has_complete_pk_descriptors({"MolecularWeight": 300, "XLogP": 0}))
+
+    def test_pk_profile_does_not_predict_from_incomplete_descriptors(self):
+        df = pk_profile_from_descriptors({"MolecularWeight": 300}, label="Partial")
+
+        self.assertEqual(df.loc[0, "Parameter"], "Predicted pharmacokinetics unavailable")
+        self.assertIn("Missing required descriptor", df.loc[0, "Evidence / formula"])
+        self.assertIn("TPSA", missing_pk_descriptor_names({"MolecularWeight": 300}))
+
+    def test_descriptor_fallback_fills_missing_values_without_overwriting(self):
+        merged = merge_pk_descriptor_fallback(
+            {
+                "MolecularWeight": 300,
+                "XLogP": 1.5,
+                "DescriptorSource": "PubChem basic properties",
+            },
+            {
+                "MolecularWeight": 310,
+                "TPSA": 65,
+                "HBondDonorCount": 1,
+                "HBondAcceptorCount": 4,
+                "RotatableBondCount": 3,
+                "Charge": 0,
+                "DescriptorSource": "RDKit from SMILES",
+            },
+        )
+
+        self.assertEqual(merged["MolecularWeight"], 300)
+        self.assertEqual(merged["XLogP"], 1.5)
+        self.assertEqual(merged["TPSA"], 65)
+        self.assertIn("RDKit from SMILES fallback", merged["DescriptorSource"])
+
     def test_simulation_returns_route_summary_and_curve(self):
         prediction = predict_pk_from_descriptors(
             {
@@ -133,6 +180,8 @@ class PharmacokineticPredictionTests(unittest.TestCase):
         self.assertEqual(summary.loc[summary["Route"] == "Intravenous", "Volume to administer (mL)"].iloc[0], 2)
         self.assertIn("Elimination t1/2 (h)", summary.columns)
         self.assertIn("Absorption t1/2 (h)", summary.columns)
+        self.assertIn("Apparent terminal t1/2 (h)", summary.columns)
+        self.assertIn("Terminal phase driver", summary.columns)
         self.assertIn("Post-peak 50% decline (h)", summary.columns)
         self.assertIn("Concentration (mg/L)", curve.columns)
 
@@ -161,11 +210,44 @@ class PharmacokineticPredictionTests(unittest.TestCase):
             summary.loc[summary["Route"] == "Subcutaneous", "Post-peak 50% decline (h)"].iloc[0],
         )
 
+    def test_apparent_terminal_half_life_can_be_absorption_limited_by_route(self):
+        prediction = {
+            "fraction_absorbed_pct": 90,
+            "oral_bioavailability_pct": 75,
+            "tpsa": 65,
+            "rotb": 4,
+            "mw": 310,
+            "charge": 0,
+            "vd_l_kg": 0.1,
+            "clearance_ml_min_kg": 20,
+        }
+
+        _, summary = simulate_pk_curves(
+            prediction,
+            dose_amount=10,
+            dose_unit="milligram",
+            routes=["Oral", "Subcutaneous", "Intravenous"],
+        )
+
+        elimination_half_life = summary.loc[summary["Route"] == "Intravenous", "Elimination t1/2 (h)"].iloc[0]
+        oral_terminal = summary.loc[summary["Route"] == "Oral", "Apparent terminal t1/2 (h)"].iloc[0]
+        subcutaneous_terminal = summary.loc[
+            summary["Route"] == "Subcutaneous", "Apparent terminal t1/2 (h)"
+        ].iloc[0]
+
+        self.assertGreater(oral_terminal, elimination_half_life)
+        self.assertGreater(subcutaneous_terminal, oral_terminal)
+        self.assertEqual(
+            summary.loc[summary["Route"] == "Subcutaneous", "Terminal phase driver"].iloc[0],
+            "Absorption-limited (flip-flop)",
+        )
+
     def test_descriptor_formula_items_include_estimate_context(self):
         labels = {label for label, _ in pk_estimate_formula_items()}
 
         self.assertIn("Predicted fraction absorbed", labels)
         self.assertIn("Clark-style brain:blood estimate", labels)
+        self.assertIn("Apparent terminal half-life", labels)
         self.assertIn("Post-peak half-time", labels)
 
     def test_reference_dose_can_estimate_mec_and_mtc(self):

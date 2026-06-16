@@ -12,6 +12,7 @@ import base64
 import html
 import io
 import math
+import time
 from typing import Any
 
 import pandas as pd
@@ -44,7 +45,10 @@ PK_SIMULATION_NOTE = (
     "Dose-curve simulations assume a healthy 70 kg young adult by default, a "
     "one-compartment model, first-order absorption for non-IV routes, normal renal "
     "and CYP activity, and no inhibitors or inducers. They are for exploratory "
-    "comparison only and must not be used for prescribing or self-dosing."
+    "comparison only and must not be used for prescribing or self-dosing. "
+    "Elimination half-life is route-independent in this linear model; apparent "
+    "terminal half-life becomes route-dependent only when absorption is slower "
+    "than elimination."
 )
 
 _PUG_PROPERTY_URL = (
@@ -52,6 +56,24 @@ _PUG_PROPERTY_URL = (
     "MolecularWeight,XLogP,TPSA,HBondDonorCount,HBondAcceptorCount,"
     "RotatableBondCount,Charge,CanonicalSMILES,IsomericSMILES/JSON"
 )
+
+_HTTP_SESSION = requests.Session()
+_HTTP_SESSION.headers.update(
+    {
+        "User-Agent": "chembl-bioactivity-report/0.2 (+https://github.com/Epineph/chembl-bioactivity-report)",
+        "Accept": "application/json, text/plain;q=0.5",
+    }
+)
+
+_PK_DESCRIPTOR_ALIASES = {
+    "mw": ("MolecularWeight", "MolWt", "MW", "molecular_weight"),
+    "logp": ("XLogP", "MolLogP", "LogP", "cLogP", "logp"),
+    "tpsa": ("TPSA", "tpsa", "TopologicalPolarSurfaceArea"),
+    "hbd": ("HBondDonorCount", "HBD", "NumHDonors"),
+    "hba": ("HBondAcceptorCount", "HBA", "NumHAcceptors"),
+    "rotb": ("RotatableBondCount", "RotB", "NumRotatableBonds"),
+    "charge": ("Charge", "FormalCharge", "formal_charge"),
+}
 
 _DOSE_UNIT_TO_MG = {
     "microgram": 0.001,
@@ -153,6 +175,20 @@ ACTIVE_METABOLITE_NOTES = {
 }
 
 
+def _http_get(url: str, timeout: float = 30.0, retries: int = 3, backoff: float = 1.6):
+    """GET with a small retry loop for PubChem/PUG calls."""
+    for attempt in range(retries):
+        try:
+            response = _HTTP_SESSION.get(url, timeout=timeout, allow_redirects=True)
+            if response.status_code == 429 or 500 <= response.status_code < 600:
+                time.sleep(backoff**attempt)
+                continue
+            return response
+        except requests.RequestException:
+            time.sleep(backoff**attempt)
+    return None
+
+
 def _as_float(value: Any, default: float | None = None) -> float | None:
     if value is None or value == "":
         return default
@@ -217,11 +253,74 @@ def _activity_value_to_nm(activity_type: str, value: Any, unit: str) -> float | 
     return numeric * multipliers.get(unit_lower) if unit_lower in multipliers else None
 
 
+def has_complete_pk_descriptors(descriptors: dict[str, Any] | None) -> bool:
+    """Return whether all required PK screening descriptors are present."""
+    if not descriptors:
+        return False
+    return all(
+        _first_present(descriptors, *aliases) is not None
+        for aliases in _PK_DESCRIPTOR_ALIASES.values()
+    )
+
+
+def missing_pk_descriptor_names(descriptors: dict[str, Any] | None) -> list[str]:
+    """Return display names for required PK descriptors missing from a mapping."""
+    labels = {
+        "mw": "molecular weight",
+        "logp": "logP",
+        "tpsa": "TPSA",
+        "hbd": "H-bond donors",
+        "hba": "H-bond acceptors",
+        "rotb": "rotatable bonds",
+        "charge": "formal charge",
+    }
+    descriptors = descriptors or {}
+    return [
+        labels[key]
+        for key, aliases in _PK_DESCRIPTOR_ALIASES.items()
+        if _first_present(descriptors, *aliases) is None
+    ]
+
+
+def merge_pk_descriptor_fallback(
+    primary: dict[str, Any] | None, fallback: dict[str, Any] | None
+) -> dict[str, Any]:
+    """Fill missing descriptor keys from a fallback source without overwriting values."""
+    merged = dict(primary or {})
+    if not fallback:
+        return merged
+
+    original_source = merged.get("DescriptorSource")
+    fallback_source = fallback.get("DescriptorSource")
+    changed = False
+    for key, value in fallback.items():
+        if key == "DescriptorSource" or value in (None, ""):
+            continue
+        if merged.get(key) in (None, ""):
+            merged[key] = value
+            changed = True
+
+    if fallback_source and changed:
+        if original_source:
+            merged["DescriptorSource"] = (
+                f"{original_source} + {fallback_source} fallback"
+            )
+        else:
+            merged["DescriptorSource"] = fallback_source
+    elif fallback_source and not original_source:
+        merged["DescriptorSource"] = fallback_source
+    return merged
+
+
 def clean_activity_df(activities: list[dict[str, Any]]) -> pd.DataFrame:
     """Normalize ChEMBL activity rows and add a numeric nM column when possible."""
     rows: list[dict[str, Any]] = []
     for activity in activities:
-        target = activity.get("target_pref_name") or activity.get("target_chembl_id") or "Unknown"
+        target = (
+            activity.get("target_pref_name")
+            or activity.get("target_chembl_id")
+            or "Unknown"
+        )
         activity_type = activity.get("standard_type") or ""
         value = activity.get("standard_value") or ""
         units = activity.get("standard_units") or ""
@@ -246,7 +345,9 @@ def clean_activity_df(activities: list[dict[str, Any]]) -> pd.DataFrame:
     return df[df["Value"].astype(str).str.len() > 0].reset_index(drop=True)
 
 
-def filter_by_threshold(df: pd.DataFrame, column: str = "Value_nM", max_nM: float = 10_000) -> pd.DataFrame:
+def filter_by_threshold(
+    df: pd.DataFrame, column: str = "Value_nM", max_nM: float = 10_000
+) -> pd.DataFrame:
     """Keep rows at or below an nM threshold while preserving rows without numeric values."""
     if df is None or df.empty or column not in df.columns:
         return df
@@ -300,16 +401,24 @@ def descriptors_from_pubchem_cid(cid: int, smiles: str | None = None) -> dict[st
 
     if not descriptors:
         try:
-            response = requests.get(_PUG_PROPERTY_URL.format(cid=int(cid)), timeout=20)
-            if response.ok:
-                properties = response.json().get("PropertyTable", {}).get("Properties", [])
+            response = _http_get(_PUG_PROPERTY_URL.format(cid=int(cid)), timeout=20)
+            if response and response.ok:
+                properties = (
+                    response.json().get("PropertyTable", {}).get("Properties", [])
+                )
                 if properties:
                     descriptors.update(properties[0])
-                    descriptors["DescriptorSource"] = "PubChem PUG REST computed properties"
+                    descriptors["DescriptorSource"] = (
+                        "PubChem PUG REST computed properties"
+                    )
         except Exception:
             pass
 
-    smiles = smiles or descriptors.get("IsomericSMILES") or descriptors.get("CanonicalSMILES")
+    smiles = (
+        smiles
+        or descriptors.get("IsomericSMILES")
+        or descriptors.get("CanonicalSMILES")
+    )
     if smiles:
         rdkit_descriptors = descriptors_from_smiles(str(smiles))
         filled_with_rdkit = False
@@ -319,29 +428,90 @@ def descriptors_from_pubchem_cid(cid: int, smiles: str | None = None) -> dict[st
                 descriptors[key] = value
                 filled_with_rdkit = True
         if filled_with_rdkit and source_before_rdkit:
-            descriptors["DescriptorSource"] = f"{descriptors['DescriptorSource']} + RDKit fallback"
+            descriptors["DescriptorSource"] = (
+                f"{descriptors['DescriptorSource']} + RDKit fallback"
+            )
 
     return descriptors
 
 
-def normalize_pk_descriptors(descriptors: dict[str, Any]) -> dict[str, float | str | None]:
+def complete_pk_descriptors(
+    descriptors: dict[str, Any] | None,
+    cid: int | None = None,
+    smiles: str | None = None,
+) -> dict[str, Any]:
+    """Fill incomplete PK descriptors from PubChem and RDKit when possible."""
+    completed = dict(descriptors or {})
+    if has_complete_pk_descriptors(completed):
+        return completed
+
+    if cid is not None:
+        completed = merge_pk_descriptor_fallback(
+            completed, descriptors_from_pubchem_cid(int(cid), smiles=smiles)
+        )
+        smiles = (
+            smiles
+            or completed.get("IsomericSMILES")
+            or completed.get("CanonicalSMILES")
+        )
+        if has_complete_pk_descriptors(completed):
+            return completed
+
+    if smiles:
+        completed = merge_pk_descriptor_fallback(
+            completed, descriptors_from_smiles(str(smiles))
+        )
+    return completed
+
+
+def normalize_pk_descriptors(
+    descriptors: dict[str, Any],
+) -> dict[str, float | str | None]:
     """Map PubChem/RDKit descriptor names to a stable internal schema."""
     normalized: dict[str, float | str | None] = {
-        "mw": _as_float(_first_present(descriptors, "MolecularWeight", "MolWt", "MW", "molecular_weight"), 0.0),
-        "logp": _as_float(_first_present(descriptors, "XLogP", "MolLogP", "LogP", "cLogP", "logp"), 0.0),
-        "tpsa": _as_float(_first_present(descriptors, "TPSA", "tpsa", "TopologicalPolarSurfaceArea"), 0.0),
-        "hbd": _as_float(_first_present(descriptors, "HBondDonorCount", "HBD", "NumHDonors"), 0.0),
-        "hba": _as_float(_first_present(descriptors, "HBondAcceptorCount", "HBA", "NumHAcceptors"), 0.0),
-        "rotb": _as_float(_first_present(descriptors, "RotatableBondCount", "RotB", "NumRotatableBonds"), 0.0),
-        "charge": _as_float(_first_present(descriptors, "Charge", "FormalCharge", "formal_charge"), 0.0),
-        "smiles": _first_present(descriptors, "IsomericSMILES", "CanonicalSMILES", "SMILES"),
-        "source": _first_present(descriptors, "DescriptorSource", "Source") or "Provided descriptors",
+        "mw": _as_float(
+            _first_present(descriptors, *_PK_DESCRIPTOR_ALIASES["mw"]), 0.0
+        ),
+        "logp": _as_float(
+            _first_present(descriptors, *_PK_DESCRIPTOR_ALIASES["logp"]), 0.0
+        ),
+        "tpsa": _as_float(
+            _first_present(descriptors, *_PK_DESCRIPTOR_ALIASES["tpsa"]), 0.0
+        ),
+        "hbd": _as_float(
+            _first_present(descriptors, *_PK_DESCRIPTOR_ALIASES["hbd"]), 0.0
+        ),
+        "hba": _as_float(
+            _first_present(descriptors, *_PK_DESCRIPTOR_ALIASES["hba"]), 0.0
+        ),
+        "rotb": _as_float(
+            _first_present(descriptors, *_PK_DESCRIPTOR_ALIASES["rotb"]), 0.0
+        ),
+        "charge": _as_float(
+            _first_present(descriptors, *_PK_DESCRIPTOR_ALIASES["charge"]), 0.0
+        ),
+        "smiles": _first_present(
+            descriptors, "IsomericSMILES", "CanonicalSMILES", "SMILES"
+        ),
+        "source": _first_present(descriptors, "DescriptorSource", "Source")
+        or "Provided descriptors",
     }
 
-    if normalized["logp"] == 0.0 and normalized["smiles"]:
+    if not has_complete_pk_descriptors(descriptors) and normalized["smiles"]:
         rdkit_descriptors = descriptors_from_smiles(str(normalized["smiles"]))
         if rdkit_descriptors:
-            normalized["logp"] = _as_float(rdkit_descriptors.get("XLogP"), normalized["logp"])
+            rdkit_values = {
+                "mw": rdkit_descriptors.get("MolecularWeight"),
+                "logp": rdkit_descriptors.get("XLogP"),
+                "tpsa": rdkit_descriptors.get("TPSA"),
+                "hbd": rdkit_descriptors.get("HBondDonorCount"),
+                "hba": rdkit_descriptors.get("HBondAcceptorCount"),
+                "rotb": rdkit_descriptors.get("RotatableBondCount"),
+                "charge": rdkit_descriptors.get("Charge"),
+            }
+            for key, value in rdkit_values.items():
+                if _first_present(descriptors, *_PK_DESCRIPTOR_ALIASES[key]) is None:
+                    normalized[key] = _as_float(value, normalized[key])
             normalized["source"] = f"{normalized['source']} + RDKit"
 
     return normalized
@@ -388,7 +558,9 @@ def predict_pk_from_descriptors(descriptors: dict[str, Any]) -> dict[str, Any]:
         0.18,
         0.9,
     )
-    oral_bioavailability_pct = _clip(fraction_absorbed_pct * first_pass_factor, 1.0, 95.0)
+    oral_bioavailability_pct = _clip(
+        fraction_absorbed_pct * first_pass_factor, 1.0, 95.0
+    )
 
     # Clark-style descriptor model: logBB = 0.152*cLogP - 0.0148*PSA + 0.139.
     logbb = 0.152 * logp - 0.0148 * tpsa + 0.139
@@ -408,10 +580,14 @@ def predict_pk_from_descriptors(descriptors: dict[str, Any]) -> dict[str, Any]:
     )
     vd_l_kg = 10 ** _clip(log10_vd, -1.3, 1.2)
 
-    hepatic_score = _sigmoid(-2.0 + 0.45 * logp + 0.006 * (mw - 300.0) + 0.08 * rotb - 0.008 * tpsa)
+    hepatic_score = _sigmoid(
+        -2.0 + 0.45 * logp + 0.006 * (mw - 300.0) + 0.08 * rotb - 0.008 * tpsa
+    )
     hepatic_extraction = 0.02 + 0.55 * hepatic_score
     hepatic_cl_ml_min_kg = 20.7 * hepatic_extraction
-    renal_score = _sigmoid(0.8 - 0.75 * logp + 0.012 * (tpsa - 70.0) - 0.006 * (mw - 300.0))
+    renal_score = _sigmoid(
+        0.8 - 0.75 * logp + 0.012 * (tpsa - 70.0) - 0.006 * (mw - 300.0)
+    )
     renal_cl_ml_min_kg = 1.0 * renal_score
     clearance_ml_min_kg = _clip(hepatic_cl_ml_min_kg + renal_cl_ml_min_kg, 0.2, 25.0)
 
@@ -440,7 +616,11 @@ def predict_pk_from_descriptors(descriptors: dict[str, Any]) -> dict[str, Any]:
         applicability_flags.append("TPSA very high")
     if lipinski_violations >= 2:
         applicability_flags.append("multiple Lipinski violations")
-    applicability = "; ".join(applicability_flags) if applicability_flags else "Within broad small-molecule descriptor range"
+    applicability = (
+        "; ".join(applicability_flags)
+        if applicability_flags
+        else "Within broad small-molecule descriptor range"
+    )
 
     return {
         "mw": mw,
@@ -502,12 +682,16 @@ def route_parameters(route: str, prediction: dict[str, Any]) -> dict[str, Any]:
         raise ValueError(f"Unsupported route: {route}")
 
     fa = _clip(float(prediction.get("fraction_absorbed_pct", 0.0)) / 100.0, 0.01, 0.98)
-    oral_f = _clip(float(prediction.get("oral_bioavailability_pct", 0.0)) / 100.0, 0.01, 0.95)
+    oral_f = _clip(
+        float(prediction.get("oral_bioavailability_pct", 0.0)) / 100.0, 0.01, 0.95
+    )
     tpsa = float(prediction.get("tpsa", 0.0) or 0.0)
     rotb = float(prediction.get("rotb", 0.0) or 0.0)
     mw = float(prediction.get("mw", 0.0) or 0.0)
     charge = float(prediction.get("charge", 0.0) or 0.0)
-    permeability = _clip(1.15 - max(0.0, tpsa - 75.0) / 220.0 - max(0.0, rotb - 6.0) / 18.0, 0.35, 1.35)
+    permeability = _clip(
+        1.15 - max(0.0, tpsa - 75.0) / 220.0 - max(0.0, rotb - 6.0) / 18.0, 0.35, 1.35
+    )
 
     if route_key == "oral":
         return {
@@ -534,7 +718,9 @@ def route_parameters(route: str, prediction: dict[str, Any]) -> dict[str, Any]:
             "assumption": "Nasal mucosal absorption proxy; formulation, pH, and local tolerability are not modeled.",
         }
     if route_key == "subcutaneous":
-        bioavailability = 0.92 - 0.18 * max(0.0, mw - 800.0) / 800.0 - 0.06 * (abs(charge) >= 2)
+        bioavailability = (
+            0.92 - 0.18 * max(0.0, mw - 800.0) / 800.0 - 0.06 * (abs(charge) >= 2)
+        )
         return {
             "route": "Subcutaneous",
             "F": _clip(bioavailability, 0.45, 0.98),
@@ -551,13 +737,17 @@ def route_parameters(route: str, prediction: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _linear_crossing_time(t0: float, c0: float, t1: float, c1: float, threshold: float) -> float:
+def _linear_crossing_time(
+    t0: float, c0: float, t1: float, c1: float, threshold: float
+) -> float:
     if c1 == c0:
         return t1
     return t0 + (threshold - c0) * (t1 - t0) / (c1 - c0)
 
 
-def _threshold_times(times: list[float], concentrations: list[float], threshold: float | None) -> dict[str, Any]:
+def _threshold_times(
+    times: list[float], concentrations: list[float], threshold: float | None
+) -> dict[str, Any]:
     if threshold is None or threshold <= 0:
         return {"first_h": None, "last_h": None, "duration_h": None}
 
@@ -570,18 +760,33 @@ def _threshold_times(times: list[float], concentrations: list[float], threshold:
                     first_h = times[idx]
                 else:
                     first_h = _linear_crossing_time(
-                        times[idx - 1], concentrations[idx - 1], times[idx], concentration, threshold
+                        times[idx - 1],
+                        concentrations[idx - 1],
+                        times[idx],
+                        concentration,
+                        threshold,
                     )
         elif first_h is not None and idx > 0 and concentrations[idx - 1] >= threshold:
-            fall_h = _linear_crossing_time(times[idx - 1], concentrations[idx - 1], times[idx], concentration, threshold)
+            fall_h = _linear_crossing_time(
+                times[idx - 1],
+                concentrations[idx - 1],
+                times[idx],
+                concentration,
+                threshold,
+            )
             break
 
-    duration_h = None if first_h is None or fall_h is None else max(0.0, fall_h - first_h)
+    duration_h = (
+        None if first_h is None or fall_h is None else max(0.0, fall_h - first_h)
+    )
     return {"first_h": first_h, "last_h": fall_h, "duration_h": duration_h}
 
 
 def _therapeutic_window_duration(
-    times: list[float], concentrations: list[float], mec_mg_l: float | None, mtc_mg_l: float | None
+    times: list[float],
+    concentrations: list[float],
+    mec_mg_l: float | None,
+    mtc_mg_l: float | None,
 ) -> float | None:
     if mec_mg_l is None or mec_mg_l <= 0 or mtc_mg_l is None or mtc_mg_l <= mec_mg_l:
         return None
@@ -593,7 +798,9 @@ def _therapeutic_window_duration(
     return total
 
 
-def _post_peak_half_time(times: list[float], concentrations: list[float]) -> float | None:
+def _post_peak_half_time(
+    times: list[float], concentrations: list[float]
+) -> float | None:
     """Time after Cmax for concentration to fall to half of Cmax."""
     if not times or not concentrations:
         return None
@@ -604,7 +811,13 @@ def _post_peak_half_time(times: list[float], concentrations: list[float]) -> flo
     threshold = cmax / 2.0
     for idx in range(peak_idx + 1, len(times)):
         if concentrations[idx] <= threshold <= concentrations[idx - 1]:
-            crossing = _linear_crossing_time(times[idx - 1], concentrations[idx - 1], times[idx], concentrations[idx], threshold)
+            crossing = _linear_crossing_time(
+                times[idx - 1],
+                concentrations[idx - 1],
+                times[idx],
+                concentrations[idx],
+                threshold,
+            )
             return max(0.0, crossing - times[peak_idx])
     return None
 
@@ -720,18 +933,29 @@ def simulate_pk_for_route(
     time_step_h = _clip(float(time_step_h or 0.05), 0.01, 1.0)
 
     vd_l_kg = max(0.01, float(prediction.get("vd_l_kg", 0.7) or 0.7))
-    clearance_ml_min_kg = max(0.01, float(prediction.get("clearance_ml_min_kg", 5.0) or 5.0))
+    clearance_ml_min_kg = max(
+        0.01, float(prediction.get("clearance_ml_min_kg", 5.0) or 5.0)
+    )
     vd_l = vd_l_kg * body_weight_kg
     clearance_l_h = clearance_ml_min_kg * 0.06 * body_weight_kg
     ke_h = clearance_l_h / vd_l
+    ka_h = route_params["ka_h"]
     half_life_h = math.log(2) / ke_h if ke_h > 0 else None
-    absorption_half_life_h = math.log(2) / route_params["ka_h"] if route_params["ka_h"] else None
+    absorption_half_life_h = math.log(2) / ka_h if ka_h else None
+    if ka_h is None:
+        apparent_terminal_half_life_h = half_life_h
+        terminal_phase_driver = "Elimination"
+    elif ka_h < ke_h:
+        apparent_terminal_half_life_h = math.log(2) / ka_h
+        terminal_phase_driver = "Absorption-limited (flip-flop)"
+    else:
+        apparent_terminal_half_life_h = half_life_h
+        terminal_phase_driver = "Elimination"
     absorbed_dose_mg = route_params["F"] * dose_mg
 
     steps = int(math.ceil(duration_h / time_step_h))
     times = [round(idx * time_step_h, 6) for idx in range(steps + 1)]
     concentrations: list[float] = []
-    ka_h = route_params["ka_h"]
     lag_h = float(route_params["lag_h"] or 0.0)
 
     for time_h in times:
@@ -744,7 +968,9 @@ def simulate_pk_for_route(
             if t_eff <= 0:
                 concentration = 0.0
             elif abs(ka_h - ke_h) < 1e-6:
-                concentration = absorbed_dose_mg / vd_l * ka_h * t_eff * math.exp(-ke_h * t_eff)
+                concentration = (
+                    absorbed_dose_mg / vd_l * ka_h * t_eff * math.exp(-ke_h * t_eff)
+                )
             else:
                 concentration = (
                     absorbed_dose_mg
@@ -759,15 +985,23 @@ def simulate_pk_for_route(
     post_peak_half_time_h = _post_peak_half_time(times, concentrations)
     auc_0_inf_mg_h_l = absorbed_dose_mg / clearance_l_h if clearance_l_h > 0 else None
     auc_last = sum(
-        (concentrations[idx - 1] + concentrations[idx]) / 2.0 * (times[idx] - times[idx - 1])
+        (concentrations[idx - 1] + concentrations[idx])
+        / 2.0
+        * (times[idx] - times[idx - 1])
         for idx in range(1, len(times))
     )
     mec_times = _threshold_times(times, concentrations, mec_mg_l)
     mtc_times = _threshold_times(times, concentrations, mtc_mg_l)
-    therapeutic_duration_h = _therapeutic_window_duration(times, concentrations, mec_mg_l, mtc_mg_l)
+    therapeutic_duration_h = _therapeutic_window_duration(
+        times, concentrations, mec_mg_l, mtc_mg_l
+    )
     volume_to_administer_ml = None
     concentration = _as_float(injection_concentration_mg_ml)
-    if concentration and concentration > 0 and route_params["route"] in {"Intravenous", "Subcutaneous"}:
+    if (
+        concentration
+        and concentration > 0
+        and route_params["route"] in {"Intravenous", "Subcutaneous"}
+    ):
         volume_to_administer_ml = dose_mg / concentration
 
     curve = pd.DataFrame(
@@ -788,6 +1022,8 @@ def simulate_pk_for_route(
         "ke (1/h)": ke_h,
         "Elimination t1/2 (h)": half_life_h,
         "Absorption t1/2 (h)": absorption_half_life_h,
+        "Apparent terminal t1/2 (h)": apparent_terminal_half_life_h,
+        "Terminal phase driver": terminal_phase_driver,
         "Post-peak 50% decline (h)": post_peak_half_time_h,
         "Cmax (mg/L)": cmax_mg_l,
         "Tmax (h)": tmax_h,
@@ -859,7 +1095,13 @@ def simulate_active_metabolite_curves(
     formation-limited model, not a PBPK or enzyme-genotype model.
     """
     models = active_metabolite_model_for_compound(compound_name)
-    if not models or parent_curve_df is None or parent_curve_df.empty or parent_summary_df is None or parent_summary_df.empty:
+    if (
+        not models
+        or parent_curve_df is None
+        or parent_curve_df.empty
+        or parent_summary_df is None
+        or parent_summary_df.empty
+    ):
         return pd.DataFrame(), pd.DataFrame()
 
     body_weight_kg = max(1.0, float(body_weight_kg or 70.0))
@@ -875,7 +1117,9 @@ def simulate_active_metabolite_curves(
         if summary_match.empty:
             continue
         route_summary = summary_match.iloc[0]
-        parent_cl_l_h = max(0.001, float(route_summary["CL (mL/min/kg)"]) * 0.06 * body_weight_kg)
+        parent_cl_l_h = max(
+            0.001, float(route_summary["CL (mL/min/kg)"]) * 0.06 * body_weight_kg
+        )
 
         for idx, time_h in enumerate(times):
             rows.append(
@@ -894,15 +1138,25 @@ def simulate_active_metabolite_curves(
             metabolite_concs = []
             half_life_h = max(0.05, float(model.get("half_life_h", 6.0) or 6.0))
             ke_m = math.log(2) / half_life_h
-            vd_m_l = parent_vd_l_kg * float(model.get("vd_multiplier", 1.0) or 1.0) * body_weight_kg
-            formation_fraction = _clip(float(model.get("formation_fraction", 0.1) or 0.1), 0.0, 1.0)
-            potency = max(0.0, float(model.get("potency_relative_to_parent", 1.0) or 1.0))
+            vd_m_l = (
+                parent_vd_l_kg
+                * float(model.get("vd_multiplier", 1.0) or 1.0)
+                * body_weight_kg
+            )
+            formation_fraction = _clip(
+                float(model.get("formation_fraction", 0.1) or 0.1), 0.0, 1.0
+            )
+            potency = max(
+                0.0, float(model.get("potency_relative_to_parent", 1.0) or 1.0)
+            )
             previous_time = times[0] if times else 0.0
 
             for idx, time_h in enumerate(times):
                 dt = 0.0 if idx == 0 else max(0.0, time_h - previous_time)
                 input_rate_mg_h = formation_fraction * parent_cl_l_h * parent_concs[idx]
-                amount_mg = max(0.0, amount_mg + (input_rate_mg_h - ke_m * amount_mg) * dt)
+                amount_mg = max(
+                    0.0, amount_mg + (input_rate_mg_h - ke_m * amount_mg) * dt
+                )
                 concentration = amount_mg / vd_m_l if vd_m_l > 0 else 0.0
                 metabolite_concs.append(concentration)
                 effect_index = concentration * potency
@@ -913,13 +1167,19 @@ def simulate_active_metabolite_curves(
                         "Time (h)": time_h,
                         "Curve": f"{model['name']} active-moiety index",
                         "Relative active-moiety index": effect_index,
-                        "Basis": model.get("basis", "Curated active-metabolite approximation"),
+                        "Basis": model.get(
+                            "basis", "Curated active-metabolite approximation"
+                        ),
                     }
                 )
                 previous_time = time_h
 
             peak_index = max((c * potency for c in metabolite_concs), default=0.0)
-            peak_time = times[[c * potency for c in metabolite_concs].index(peak_index)] if metabolite_concs else None
+            peak_time = (
+                times[[c * potency for c in metabolite_concs].index(peak_index)]
+                if metabolite_concs
+                else None
+            )
             summary_rows.append(
                 {
                     "Route": route,
@@ -929,7 +1189,9 @@ def simulate_active_metabolite_curves(
                     "Relative potency vs parent": potency,
                     "Peak active-moiety index": peak_index,
                     "Peak time (h)": peak_time,
-                    "Basis": model.get("basis", "Curated active-metabolite approximation"),
+                    "Basis": model.get(
+                        "basis", "Curated active-metabolite approximation"
+                    ),
                 }
             )
 
@@ -957,10 +1219,14 @@ def active_metabolite_notes_for_compound(compound_name: str) -> pd.DataFrame:
             "Main pathway": "Unknown from the current lightweight rules",
             "PK implication": "The concentration-time curve is parent-compound only. If efficacy depends on an active metabolite or prodrug activation, the therapeutic-effect curve may differ substantially.",
         }
-    display_note = {key: value for key, value in note.items() if key != "Metabolite model"}
+    display_note = {
+        key: value for key, value in note.items() if key != "Metabolite model"
+    }
     if "Metabolite model" in note:
-        display_note["Modeled metabolite curve"] = ", ".join(model["name"] for model in note["Metabolite model"])
-    return pd.DataFrame([{ "Compound": compound_name or "Compound", **display_note }])
+        display_note["Modeled metabolite curve"] = ", ".join(
+            model["name"] for model in note["Metabolite model"]
+        )
+    return pd.DataFrame([{"Compound": compound_name or "Compound", **display_note}])
 
 
 def pk_formula_markdown() -> str:
@@ -999,15 +1265,24 @@ def pk_formula_items() -> list[tuple[str, str]]:
     return [
         ("Elimination rate", r"k_e = \frac{CL}{V_d}"),
         ("Half-life", r"t_{1/2} = \frac{\ln(2)}{k_e}"),
-        ("IV bolus concentration", r"C(t) = \frac{F \cdot D}{V_d} e^{-k_e t},\quad F=1"),
+        (
+            "IV bolus concentration",
+            r"C(t) = \frac{F \cdot D}{V_d} e^{-k_e t},\quad F=1",
+        ),
         (
             "First-order absorption concentration",
             r"C(t) = \frac{F \cdot D \cdot k_a}{V_d(k_a-k_e)}\left(e^{-k_e(t-t_{lag})} - e^{-k_a(t-t_{lag})}\right)",
         ),
         ("Exposure", r"AUC_{0-\infty} = \frac{F \cdot D}{CL}"),
         ("Injection volume", r"V_{admin} = \frac{D_{prescribed}}{C_{solution}}"),
-        ("Reference-dose threshold calibration", r"MEC \approx f_{Cmax} \cdot C_{max,ref\ active}"),
-        ("Reference toxic threshold calibration", r"MTC \approx f_{Cmax} \cdot C_{max,ref\ toxic}"),
+        (
+            "Reference-dose threshold calibration",
+            r"MEC \approx f_{Cmax} \cdot C_{max,ref\ active}",
+        ),
+        (
+            "Reference toxic threshold calibration",
+            r"MTC \approx f_{Cmax} \cdot C_{max,ref\ toxic}",
+        ),
     ]
 
 
@@ -1020,7 +1295,10 @@ def pk_estimate_formula_items() -> list[tuple[str, str]]:
         ),
         ("Predicted fraction absorbed", r"F_a = 100\cdot \sigma(2.2-P_{abs})"),
         ("Oral bioavailability potential", r"F_{oral}=F_a\cdot FP_{factor}"),
-        ("Clark-style brain:blood estimate", r"logBB=0.152\cdot logP-0.0148\cdot TPSA+0.139"),
+        (
+            "Clark-style brain:blood estimate",
+            r"logBB=0.152\cdot logP-0.0148\cdot TPSA+0.139",
+        ),
         (
             "Volume of distribution heuristic",
             r"log_{10}(V_d)=0.16(logP-1.5)-0.0035(TPSA-75)-0.0008(MW-350)+q_{adj}",
@@ -1030,6 +1308,7 @@ def pk_estimate_formula_items() -> list[tuple[str, str]]:
         ("Total clearance proxy", r"CL=CL_H+CL_R"),
         ("Elimination half-life", r"t_{1/2,elim}=\frac{\ln(2)\cdot V_d}{CL}"),
         ("Absorption half-life", r"t_{1/2,abs}=\frac{\ln(2)}{k_a}"),
+        ("Apparent terminal half-life", r"t_{1/2,term}=\frac{\ln(2)}{\min(k_e,k_a)}"),
         (
             "Post-peak half-time",
             r"t_{50,postpeak}=t(C=0.5\cdot C_{max},\ t>T_{max})-T_{max}",
@@ -1037,7 +1316,9 @@ def pk_estimate_formula_items() -> list[tuple[str, str]]:
     ]
 
 
-def pk_profile_from_descriptors(descriptors: dict[str, Any], label: str = "Compound") -> pd.DataFrame:
+def pk_profile_from_descriptors(
+    descriptors: dict[str, Any], label: str = "Compound"
+) -> pd.DataFrame:
     """Build a display-ready pharmacokinetic estimate table."""
     if not descriptors:
         return pd.DataFrame(
@@ -1053,7 +1334,28 @@ def pk_profile_from_descriptors(descriptors: dict[str, Any], label: str = "Compo
             ]
         )
 
-    p = predict_pk_from_descriptors(descriptors)
+    completed_descriptors = complete_pk_descriptors(
+        descriptors,
+        smiles=_first_present(
+            descriptors, "IsomericSMILES", "CanonicalSMILES", "SMILES"
+        ),
+    )
+    if not has_complete_pk_descriptors(completed_descriptors):
+        missing = ", ".join(missing_pk_descriptor_names(completed_descriptors))
+        return pd.DataFrame(
+            [
+                {
+                    "Parameter": "Predicted pharmacokinetics unavailable",
+                    "Estimate": "",
+                    "Units": "",
+                    "Interpretation": f"Incomplete structure descriptors for {label}.",
+                    "Evidence / formula": f"Missing required descriptor(s): {missing}.",
+                    "Confidence": "Unavailable",
+                }
+            ]
+        )
+
+    p = predict_pk_from_descriptors(completed_descriptors)
     rows = [
         (
             "Descriptor source",
@@ -1063,12 +1365,54 @@ def pk_profile_from_descriptors(descriptors: dict[str, Any], label: str = "Compo
             "Descriptors are read from PubChem or calculated from SMILES with RDKit.",
             "Input",
         ),
-        ("Molecular weight", _format_number(p["mw"], 2), "g/mol", "", "Lipinski RO5 uses MW <= 500.", "Input"),
-        ("XLogP / MolLogP", _format_number(p["logp"], 2), "log10", "", "Lipinski RO5 uses logP <= 5.", "Input"),
-        ("Topological polar surface area", _format_number(p["tpsa"], 1), "A^2", "", "Veber oral exposure threshold commonly uses TPSA <= 140 A^2.", "Input"),
-        ("H-bond donors", _format_number(p["hbd"], 0), "count", "", "Lipinski RO5 uses HBD <= 5.", "Input"),
-        ("H-bond acceptors", _format_number(p["hba"], 0), "count", "", "Lipinski RO5 uses HBA <= 10.", "Input"),
-        ("Rotatable bonds", _format_number(p["rotb"], 0), "count", "", "Veber oral exposure threshold commonly uses rotatable bonds <= 10.", "Input"),
+        (
+            "Molecular weight",
+            _format_number(p["mw"], 2),
+            "g/mol",
+            "",
+            "Lipinski RO5 uses MW <= 500.",
+            "Input",
+        ),
+        (
+            "XLogP / MolLogP",
+            _format_number(p["logp"], 2),
+            "log10",
+            "",
+            "Lipinski RO5 uses logP <= 5.",
+            "Input",
+        ),
+        (
+            "Topological polar surface area",
+            _format_number(p["tpsa"], 1),
+            "A^2",
+            "",
+            "Veber oral exposure threshold commonly uses TPSA <= 140 A^2.",
+            "Input",
+        ),
+        (
+            "H-bond donors",
+            _format_number(p["hbd"], 0),
+            "count",
+            "",
+            "Lipinski RO5 uses HBD <= 5.",
+            "Input",
+        ),
+        (
+            "H-bond acceptors",
+            _format_number(p["hba"], 0),
+            "count",
+            "",
+            "Lipinski RO5 uses HBA <= 10.",
+            "Input",
+        ),
+        (
+            "Rotatable bonds",
+            _format_number(p["rotb"], 0),
+            "count",
+            "",
+            "Veber oral exposure threshold commonly uses rotatable bonds <= 10.",
+            "Input",
+        ),
         (
             "Lipinski RO5 violations",
             str(p["lipinski_violations"]),
@@ -1145,11 +1489,20 @@ def pk_profile_from_descriptors(descriptors: dict[str, Any], label: str = "Compo
 
     return pd.DataFrame(
         rows,
-        columns=["Parameter", "Estimate", "Units", "Interpretation", "Evidence / formula", "Confidence"],
+        columns=[
+            "Parameter",
+            "Estimate",
+            "Units",
+            "Interpretation",
+            "Evidence / formula",
+            "Confidence",
+        ],
     )
 
 
-def pk_profile_for_compound(compound: int | str | None, smiles: str | None = None) -> pd.DataFrame:
+def pk_profile_for_compound(
+    compound: int | str | None, smiles: str | None = None
+) -> pd.DataFrame:
     """Return a PK profile for a PubChem CID or SMILES-like structure input."""
     descriptors: dict[str, Any] = {}
     label = "Compound"
@@ -1189,7 +1542,9 @@ def report_row_limit(value: Any) -> int | None:
     return None if limit <= 0 else limit
 
 
-def limited_report_dataframe(df: pd.DataFrame, row_limit: int | None = 50) -> pd.DataFrame:
+def limited_report_dataframe(
+    df: pd.DataFrame, row_limit: int | None = 50
+) -> pd.DataFrame:
     """Return a display-safe dataframe limited to the requested number of rows."""
     if df is None or df.empty:
         return pd.DataFrame()
@@ -1216,23 +1571,29 @@ def _section_images(section: dict[str, Any]) -> list[dict[str, Any]]:
             continue
         normalized.append(
             {
-                "title": str(image.get("title") or "Figure") if isinstance(image, dict) else "Figure",
+                "title": str(image.get("title") or "Figure")
+                if isinstance(image, dict)
+                else "Figure",
                 "data": data,
-                "mime": str(image.get("mime") or "image/png") if isinstance(image, dict) else "image/png",
+                "mime": str(image.get("mime") or "image/png")
+                if isinstance(image, dict)
+                else "image/png",
             }
         )
     return normalized
 
 
-def build_interactive_html_report(title: str, sections: list[dict[str, Any]], row_limit: Any = 50) -> str:
+def build_interactive_html_report(
+    title: str, sections: list[dict[str, Any]], row_limit: Any = 50
+) -> str:
     """Build a self-contained HTML report with collapsible table sections."""
     limit = report_row_limit(row_limit)
     safe_title = html.escape(title or "ChEMBL Bioactivity Report")
     body = [
         "<!doctype html>",
-        "<html lang=\"en\">",
+        '<html lang="en">',
         "<head>",
-        "<meta charset=\"utf-8\">",
+        '<meta charset="utf-8">',
         f"<title>{safe_title}</title>",
         "<style>",
         "body{font-family:system-ui,-apple-system,Segoe UI,sans-serif;margin:2rem;color:#17202a;line-height:1.45}",
@@ -1251,7 +1612,7 @@ def build_interactive_html_report(title: str, sections: list[dict[str, Any]], ro
         "</style>",
         "</head><body>",
         f"<h1>{safe_title}</h1>",
-        "<div class=\"meta\">Generated from the ChEMBL Bioactivity and Predicted Pharmacokinetics app. Use browser print/save-as-PDF for a printable copy.</div>",
+        '<div class="meta">Generated from the ChEMBL Bioactivity and Predicted Pharmacokinetics app. Use browser print/save-as-PDF for a printable copy.</div>',
     ]
 
     if not sections:
@@ -1263,15 +1624,21 @@ def build_interactive_html_report(title: str, sections: list[dict[str, Any]], ro
         if df.empty and not images:
             continue
         section_title = html.escape(str(section.get("title") or "Table"))
-        original_rows = len(section.get("df")) if section.get("df") is not None else len(df)
+        original_rows = (
+            len(section.get("df")) if section.get("df") is not None else len(df)
+        )
         shown_rows = len(df)
         note = section.get("note")
         open_attr = " open" if section.get("open", True) else ""
-        table_meta = f" <span class=\"small\">({shown_rows} of {original_rows} rows)</span>" if not df.empty else ""
+        table_meta = (
+            f' <span class="small">({shown_rows} of {original_rows} rows)</span>'
+            if not df.empty
+            else ""
+        )
         body.append(f"<details{open_attr}>")
         body.append(f"<summary>{section_title}{table_meta}</summary>")
         if note:
-            body.append(f"<div class=\"note\">{html.escape(str(note))}</div>")
+            body.append(f'<div class="note">{html.escape(str(note))}</div>')
         for image in images:
             b64 = base64.b64encode(image["data"]).decode("ascii")
             image_title = html.escape(image["title"])
@@ -1285,15 +1652,15 @@ def build_interactive_html_report(title: str, sections: list[dict[str, Any]], ro
         body.append("</details>")
 
     body.append(
-        "<p class=\"small\"><strong>Disclaimer:</strong> Pharmacokinetic outputs are approximate screening estimates, not dosing or clinical safety guidance.</p>"
+        '<p class="small"><strong>Disclaimer:</strong> Pharmacokinetic outputs are approximate screening estimates, not dosing or clinical safety guidance.</p>'
     )
     body.append("</body></html>")
     return "\n".join(body)
 
 
 def _pdf_cell(value: Any):
-    from reportlab.platypus import Paragraph
     from reportlab.lib.styles import getSampleStyleSheet
+    from reportlab.platypus import Paragraph
 
     styles = getSampleStyleSheet()
     style = styles["BodyText"]
@@ -1306,14 +1673,23 @@ def _pdf_cell(value: Any):
     return Paragraph(text, style)
 
 
-def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any = 50) -> bytes:
+def build_pdf_report(
+    title: str, sections: list[dict[str, Any]], row_limit: Any = 50
+) -> bytes:
     """Build a PDF report of current tables. Requires reportlab."""
     from reportlab.lib import colors
     from reportlab.lib.pagesizes import A4, landscape
     from reportlab.lib.styles import getSampleStyleSheet
     from reportlab.lib.units import cm
     from reportlab.lib.utils import ImageReader
-    from reportlab.platypus import Image as PdfImage, Paragraph, SimpleDocTemplate, Spacer, Table, TableStyle
+    from reportlab.platypus import Image as PdfImage
+    from reportlab.platypus import (
+        Paragraph,
+        SimpleDocTemplate,
+        Spacer,
+        Table,
+        TableStyle,
+    )
 
     limit = report_row_limit(row_limit)
     buf = io.BytesIO()
@@ -1326,8 +1702,15 @@ def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any 
         bottomMargin=0.8 * cm,
     )
     styles = getSampleStyleSheet()
-    story = [Paragraph(html.escape(title or "ChEMBL Bioactivity Report"), styles["Title"])]
-    story.append(Paragraph("Approximate screening report generated by the ChEMBL Bioactivity and Predicted Pharmacokinetics app.", styles["BodyText"]))
+    story = [
+        Paragraph(html.escape(title or "ChEMBL Bioactivity Report"), styles["Title"])
+    ]
+    story.append(
+        Paragraph(
+            "Approximate screening report generated by the ChEMBL Bioactivity and Predicted Pharmacokinetics app.",
+            styles["BodyText"],
+        )
+    )
     story.append(Spacer(1, 0.25 * cm))
 
     for section in sections:
@@ -1336,11 +1719,17 @@ def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any 
         if df.empty and not images:
             continue
         section_title = str(section.get("title") or "Table")
-        original_rows = len(section.get("df")) if section.get("df") is not None else len(df)
+        original_rows = (
+            len(section.get("df")) if section.get("df") is not None else len(df)
+        )
         table_meta = f" ({len(df)} of {original_rows} rows)" if not df.empty else ""
-        story.append(Paragraph(html.escape(f"{section_title}{table_meta}"), styles["Heading2"]))
+        story.append(
+            Paragraph(html.escape(f"{section_title}{table_meta}"), styles["Heading2"])
+        )
         if section.get("note"):
-            story.append(Paragraph(html.escape(str(section["note"])), styles["BodyText"]))
+            story.append(
+                Paragraph(html.escape(str(section["note"])), styles["BodyText"])
+            )
 
         for image in images:
             try:
@@ -1348,7 +1737,11 @@ def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any 
                 width_px, height_px = ImageReader(image_buf).getSize()
                 scale = min(doc.width / width_px, (10.5 * cm) / height_px, 1.0)
                 image_buf.seek(0)
-                story.append(PdfImage(image_buf, width=width_px * scale, height=height_px * scale))
+                story.append(
+                    PdfImage(
+                        image_buf, width=width_px * scale, height=height_px * scale
+                    )
+                )
                 story.append(Paragraph(html.escape(image["title"]), styles["BodyText"]))
                 story.append(Spacer(1, 0.2 * cm))
             except Exception:
@@ -1360,7 +1753,9 @@ def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any 
             for _, row in df.iterrows():
                 data.append([_pdf_cell(row.get(col, "")) for col in columns])
             col_count = max(1, len(columns))
-            table = Table(data, repeatRows=1, colWidths=[doc.width / col_count] * col_count)
+            table = Table(
+                data, repeatRows=1, colWidths=[doc.width / col_count] * col_count
+            )
             table.setStyle(
                 TableStyle(
                     [
@@ -1368,7 +1763,12 @@ def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any 
                         ("TEXTCOLOR", (0, 0), (-1, 0), colors.black),
                         ("GRID", (0, 0), (-1, -1), 0.25, colors.HexColor("#AAB7B8")),
                         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-                        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F8F9F9")]),
+                        (
+                            "ROWBACKGROUNDS",
+                            (0, 1),
+                            (-1, -1),
+                            [colors.white, colors.HexColor("#F8F9F9")],
+                        ),
                         ("LEFTPADDING", (0, 0), (-1, -1), 2),
                         ("RIGHTPADDING", (0, 0), (-1, -1), 2),
                         ("TOPPADDING", (0, 0), (-1, -1), 2),
@@ -1379,6 +1779,11 @@ def build_pdf_report(title: str, sections: list[dict[str, Any]], row_limit: Any 
             story.append(table)
         story.append(Spacer(1, 0.35 * cm))
 
-    story.append(Paragraph("Disclaimer: PK estimates are approximate screening values and must not be used for prescribing, self-dosing, or clinical safety decisions.", styles["BodyText"]))
+    story.append(
+        Paragraph(
+            "Disclaimer: PK estimates are approximate screening values and must not be used for prescribing, self-dosing, or clinical safety decisions.",
+            styles["BodyText"],
+        )
+    )
     doc.build(story)
     return buf.getvalue()
