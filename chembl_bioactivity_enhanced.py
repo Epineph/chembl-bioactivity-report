@@ -76,16 +76,46 @@ ACTIVE_METABOLITE_NOTES = {
         "Active metabolite(s)": "Morphine; codeine-6-glucuronide may also contribute",
         "Main pathway": "CYP2D6 O-demethylation to morphine; CYP3A4 forms norcodeine",
         "PK implication": "Parent-codeine concentration is a poor analgesic-effect proxy. IV codeine bypasses gut absorption but does not remove the need for CYP2D6 activation.",
+        "Metabolite model": [
+            {
+                "name": "Morphine",
+                "formation_fraction": 0.10,
+                "half_life_h": 2.5,
+                "vd_multiplier": 0.9,
+                "potency_relative_to_parent": 15.0,
+                "basis": "Approximate CYP2D6 normal-metabolizer activation proxy; parent-codeine curve is not an analgesic-effect proxy.",
+            }
+        ],
     },
     "tramadol": {
         "Active metabolite(s)": "O-desmethyltramadol (M1)",
         "Main pathway": "CYP2D6 forms M1; CYP3A4/CYP2B6 form less active N-desmethyltramadol",
-        "PK implication": "Analgesic effect depends partly on active metabolite formation; parent-only curves can misrepresent onset and potency.",
+        "PK implication": "Analgesic effect depends on both parent tramadol and M1. M1 dominates the opioid-receptor component because its MOR Ki is much lower than parent tramadol.",
+        "Metabolite model": [
+            {
+                "name": "O-desmethyltramadol (M1)",
+                "formation_fraction": 0.20,
+                "half_life_h": 7.0,
+                "vd_multiplier": 1.0,
+                "potency_relative_to_parent": 2.4 / 0.0034,
+                "basis": "MOR affinity proxy from Ki parent 2.4 uM vs M1 0.0034 uM; CYP2D6 normal-metabolizer assumption.",
+            }
+        ],
     },
     "diazepam": {
         "Active metabolite(s)": "Nordazepam/desmethyldiazepam, temazepam, oxazepam",
         "Main pathway": "CYP3A4/CYP2C19 N-demethylation and hydroxylation",
         "PK implication": "Parent diazepam curve can underestimate total active-moiety duration because active metabolites persist.",
+        "Metabolite model": [
+            {
+                "name": "Nordazepam/desmethyldiazepam",
+                "formation_fraction": 0.35,
+                "half_life_h": 60.0,
+                "vd_multiplier": 1.1,
+                "potency_relative_to_parent": 0.7,
+                "basis": "Approximate long-lived active-metabolite duration proxy; receptor potency differences are smaller than tramadol/M1.",
+            }
+        ],
     },
     "clopidogrel": {
         "Active metabolite(s)": "Thiol active metabolite",
@@ -560,6 +590,98 @@ def _therapeutic_window_duration(
     return total
 
 
+def estimate_threshold_from_reference_dose(
+    prediction: dict[str, Any],
+    reference_dose_amount: Any,
+    reference_dose_unit: str,
+    reference_route: str,
+    body_weight_kg: float = 70.0,
+    cmax_fraction: float = 0.5,
+    duration_h: float = 24.0,
+) -> tuple[float | None, dict[str, Any] | None]:
+    """Estimate an exposure threshold from a reference active or toxic dose.
+
+    If a dose is known to be minimally active or minimally toxic, the model uses
+    a fraction of that route's predicted Cmax as the concentration threshold.
+    The default 50% of Cmax is deliberately conservative and user-adjustable in
+    the UI.
+    """
+    dose_mg = dose_to_mg(reference_dose_amount, reference_dose_unit)
+    if dose_mg <= 0:
+        return None, None
+    _, summary = simulate_pk_for_route(
+        prediction,
+        dose_mg=dose_mg,
+        route=reference_route,
+        body_weight_kg=body_weight_kg,
+        duration_h=duration_h,
+    )
+    cmax = summary.get("Cmax (mg/L)")
+    if cmax is None or cmax <= 0:
+        return None, summary
+    fraction = _clip(float(cmax_fraction or 0.5), 0.05, 1.0)
+    return cmax * fraction, summary
+
+
+def estimate_exposure_thresholds(
+    prediction: dict[str, Any],
+    active_dose_amount: Any = 0,
+    toxic_dose_amount: Any = 0,
+    reference_dose_unit: str = "milligram",
+    reference_route: str = "Oral",
+    body_weight_kg: float = 70.0,
+    cmax_fraction: float = 0.5,
+    duration_h: float = 24.0,
+) -> tuple[float | None, float | None, pd.DataFrame]:
+    """Estimate MEC/MTC from reference active/toxic doses when supplied."""
+    rows = []
+    mec, mec_summary = estimate_threshold_from_reference_dose(
+        prediction,
+        active_dose_amount,
+        reference_dose_unit,
+        reference_route,
+        body_weight_kg=body_weight_kg,
+        cmax_fraction=cmax_fraction,
+        duration_h=duration_h,
+    )
+    if mec is not None and mec_summary is not None:
+        rows.append(
+            {
+                "Threshold": "Estimated MEC",
+                "Estimate (mg/L)": mec,
+                "Reference route": mec_summary["Route"],
+                "Reference dose (mg)": mec_summary["Dose (mg)"],
+                "Reference Cmax (mg/L)": mec_summary["Cmax (mg/L)"],
+                "Cmax fraction": _clip(float(cmax_fraction or 0.5), 0.05, 1.0),
+                "Assumption": "Minimum active dose reaches a concentration near the effect threshold.",
+            }
+        )
+
+    mtc, mtc_summary = estimate_threshold_from_reference_dose(
+        prediction,
+        toxic_dose_amount,
+        reference_dose_unit,
+        reference_route,
+        body_weight_kg=body_weight_kg,
+        cmax_fraction=cmax_fraction,
+        duration_h=duration_h,
+    )
+    if mtc is not None and mtc_summary is not None:
+        rows.append(
+            {
+                "Threshold": "Estimated MTC",
+                "Estimate (mg/L)": mtc,
+                "Reference route": mtc_summary["Route"],
+                "Reference dose (mg)": mtc_summary["Dose (mg)"],
+                "Reference Cmax (mg/L)": mtc_summary["Cmax (mg/L)"],
+                "Cmax fraction": _clip(float(cmax_fraction or 0.5), 0.05, 1.0),
+                "Assumption": "Minimum toxic dose reaches a concentration near the toxicity threshold.",
+            }
+        )
+
+    return mec, mtc, pd.DataFrame(rows)
+
+
 def simulate_pk_for_route(
     prediction: dict[str, Any],
     dose_mg: float,
@@ -695,6 +817,113 @@ def simulate_pk_curves(
     return curve_df, summary_df
 
 
+def active_metabolite_model_for_compound(compound_name: str) -> list[dict[str, Any]]:
+    """Return curated metabolite model parameters when available."""
+    note = ACTIVE_METABOLITE_NOTES.get((compound_name or "").strip().casefold(), {})
+    return list(note.get("Metabolite model", []))
+
+
+def simulate_active_metabolite_curves(
+    compound_name: str,
+    parent_curve_df: pd.DataFrame,
+    parent_summary_df: pd.DataFrame,
+    parent_prediction: dict[str, Any],
+    body_weight_kg: float = 70.0,
+) -> tuple[pd.DataFrame, pd.DataFrame]:
+    """Approximate active-metabolite and potency-weighted active-moiety curves.
+
+    This is intentionally restricted to curated examples. It is a rough
+    formation-limited model, not a PBPK or enzyme-genotype model.
+    """
+    models = active_metabolite_model_for_compound(compound_name)
+    if not models or parent_curve_df is None or parent_curve_df.empty or parent_summary_df is None or parent_summary_df.empty:
+        return pd.DataFrame(), pd.DataFrame()
+
+    body_weight_kg = max(1.0, float(body_weight_kg or 70.0))
+    parent_vd_l_kg = max(0.01, float(parent_prediction.get("vd_l_kg", 0.7) or 0.7))
+    rows = []
+    summary_rows = []
+
+    for route, route_curve in parent_curve_df.groupby("Route"):
+        route_curve = route_curve.sort_values("Time (h)")
+        times = list(route_curve["Time (h)"].astype(float))
+        parent_concs = list(route_curve["Concentration (mg/L)"].astype(float))
+        summary_match = parent_summary_df[parent_summary_df["Route"] == route]
+        if summary_match.empty:
+            continue
+        route_summary = summary_match.iloc[0]
+        parent_cl_l_h = max(0.001, float(route_summary["CL (mL/min/kg)"]) * 0.06 * body_weight_kg)
+
+        for idx, time_h in enumerate(times):
+            rows.append(
+                {
+                    "Route": route,
+                    "Time (h)": time_h,
+                    "Curve": "Parent active-moiety index",
+                    "Relative active-moiety index": parent_concs[idx],
+                    "Basis": "Parent concentration, weight 1.0",
+                }
+            )
+
+        total_by_time = {time_h: parent_concs[idx] for idx, time_h in enumerate(times)}
+        for model in models:
+            amount_mg = 0.0
+            metabolite_concs = []
+            half_life_h = max(0.05, float(model.get("half_life_h", 6.0) or 6.0))
+            ke_m = math.log(2) / half_life_h
+            vd_m_l = parent_vd_l_kg * float(model.get("vd_multiplier", 1.0) or 1.0) * body_weight_kg
+            formation_fraction = _clip(float(model.get("formation_fraction", 0.1) or 0.1), 0.0, 1.0)
+            potency = max(0.0, float(model.get("potency_relative_to_parent", 1.0) or 1.0))
+            previous_time = times[0] if times else 0.0
+
+            for idx, time_h in enumerate(times):
+                dt = 0.0 if idx == 0 else max(0.0, time_h - previous_time)
+                input_rate_mg_h = formation_fraction * parent_cl_l_h * parent_concs[idx]
+                amount_mg = max(0.0, amount_mg + (input_rate_mg_h - ke_m * amount_mg) * dt)
+                concentration = amount_mg / vd_m_l if vd_m_l > 0 else 0.0
+                metabolite_concs.append(concentration)
+                effect_index = concentration * potency
+                total_by_time[time_h] = total_by_time.get(time_h, 0.0) + effect_index
+                rows.append(
+                    {
+                        "Route": route,
+                        "Time (h)": time_h,
+                        "Curve": f"{model['name']} active-moiety index",
+                        "Relative active-moiety index": effect_index,
+                        "Basis": model.get("basis", "Curated active-metabolite approximation"),
+                    }
+                )
+                previous_time = time_h
+
+            peak_index = max((c * potency for c in metabolite_concs), default=0.0)
+            peak_time = times[[c * potency for c in metabolite_concs].index(peak_index)] if metabolite_concs else None
+            summary_rows.append(
+                {
+                    "Route": route,
+                    "Metabolite": model["name"],
+                    "Formation fraction": formation_fraction,
+                    "Metabolite half-life (h)": half_life_h,
+                    "Relative potency vs parent": potency,
+                    "Peak active-moiety index": peak_index,
+                    "Peak time (h)": peak_time,
+                    "Basis": model.get("basis", "Curated active-metabolite approximation"),
+                }
+            )
+
+        for time_h, total_index in total_by_time.items():
+            rows.append(
+                {
+                    "Route": route,
+                    "Time (h)": time_h,
+                    "Curve": "Total modeled active-moiety index",
+                    "Relative active-moiety index": total_index,
+                    "Basis": "Parent plus curated active-metabolite potency-weighted indices",
+                }
+            )
+
+    return pd.DataFrame(rows), pd.DataFrame(summary_rows)
+
+
 def active_metabolite_notes_for_compound(compound_name: str) -> pd.DataFrame:
     """Return curated active-metabolite caveats for common examples."""
     name = (compound_name or "").strip().casefold()
@@ -705,7 +934,10 @@ def active_metabolite_notes_for_compound(compound_name: str) -> pd.DataFrame:
             "Main pathway": "Unknown from the current lightweight rules",
             "PK implication": "The concentration-time curve is parent-compound only. If efficacy depends on an active metabolite or prodrug activation, the therapeutic-effect curve may differ substantially.",
         }
-    return pd.DataFrame([{ "Compound": compound_name or "Compound", **note }])
+    display_note = {key: value for key, value in note.items() if key != "Metabolite model"}
+    if "Metabolite model" in note:
+        display_note["Modeled metabolite curve"] = ", ".join(model["name"] for model in note["Metabolite model"])
+    return pd.DataFrame([{ "Compound": compound_name or "Compound", **display_note }])
 
 
 def pk_formula_markdown() -> str:
@@ -737,6 +969,23 @@ $$Volume\ to\ administer = \frac{Prescribed\ dose}{Concentration}$$
 
 Onset is the first time the predicted concentration reaches the entered MEC. Duration is the time above MEC; if MTC is supplied, the table also reports time above MTC and time inside the approximate therapeutic window.
 """.strip()
+
+
+def pk_formula_items() -> list[tuple[str, str]]:
+    """Formula labels and LaTeX equations for rendered notebook display."""
+    return [
+        ("Elimination rate", r"k_e = \frac{CL}{V_d}"),
+        ("Half-life", r"t_{1/2} = \frac{\ln(2)}{k_e}"),
+        ("IV bolus concentration", r"C(t) = \frac{F \cdot Dose}{V_d} e^{-k_e t},\quad F=1"),
+        (
+            "First-order absorption concentration",
+            r"C(t) = \frac{F \cdot Dose \cdot k_a}{V_d(k_a-k_e)}\left(e^{-k_e(t-t_{lag})} - e^{-k_a(t-t_{lag})}\right)",
+        ),
+        ("Exposure", r"AUC_{0-\infty} = \frac{F \cdot Dose}{CL}"),
+        ("Injection volume", r"Volume\ to\ administer = \frac{Prescribed\ dose}{Concentration}"),
+        ("Reference-dose threshold calibration", r"MEC \approx f_{Cmax} \cdot C_{max,\ reference\ active\ dose}"),
+        ("Reference toxic threshold calibration", r"MTC \approx f_{Cmax} \cdot C_{max,\ reference\ toxic\ dose}"),
+    ]
 
 
 def pk_profile_from_descriptors(descriptors: dict[str, Any], label: str = "Compound") -> pd.DataFrame:

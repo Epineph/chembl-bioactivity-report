@@ -22,15 +22,17 @@ from chembl_bioactivity_enhanced import (
     PK_SIMULATION_NOTE,
     active_metabolite_notes_for_compound,
     descriptors_from_pubchem_cid,
-    pk_formula_markdown,
+    estimate_exposure_thresholds,
+    pk_formula_items,
     pk_profile_from_descriptors,
     predict_pk_from_descriptors,
+    simulate_active_metabolite_curves,
     simulate_pk_curves,
 )
 import io, base64, json, re, requests, contextlib, warnings, time, unicodedata
 from urllib.parse import quote
 import pandas as pd
-from IPython.display import display, clear_output, Markdown, HTML, Image
+from IPython.display import display, clear_output, Markdown, HTML, Image, Math
 import ipywidgets as widgets
 
 # Silence known deprecation warning from chembl_webresource_client
@@ -534,6 +536,35 @@ def plot_pk_curves(curve_df: pd.DataFrame, mec_mg_l: float | None = None, mtc_mg
     fig.tight_layout()
     return fig
 
+def plot_active_metabolite_curves(curve_df: pd.DataFrame):
+    if not _MPL or curve_df is None or curve_df.empty:
+        return None
+    fig, ax = plt.subplots(figsize=(9, 4.8))
+    for (route, curve_name), curve_part in curve_df.groupby(["Route", "Curve"]):
+        linestyle = "--" if "metabolite" in curve_name.casefold() else "-"
+        linewidth = 2.6 if "Total" in curve_name else 1.8
+        ax.plot(
+            curve_part["Time (h)"],
+            curve_part["Relative active-moiety index"],
+            label=f"{route}: {curve_name}",
+            linestyle=linestyle,
+            linewidth=linewidth,
+        )
+    ax.set_title("Curated active metabolite / active-moiety approximation")
+    ax.set_xlabel("Time (h)")
+    ax.set_ylabel("Relative active-moiety index")
+    ax.grid(True, alpha=0.25)
+    ax.legend(loc="best", fontsize="small")
+    fig.tight_layout()
+    return fig
+
+def display_pk_formulas():
+    display(Markdown("**One-compartment simulation formulas**"))
+    for label, formula in pk_formula_items():
+        display(Markdown(label))
+        display(Math(formula))
+    display(Markdown("Onset is the first time the predicted concentration reaches MEC. Duration is the time above MEC; if MTC is supplied or estimated, the table also reports time above MTC and time inside the approximate therapeutic window."))
+
 # ----------------------------
 # Interactive UI
 # ----------------------------
@@ -617,6 +648,40 @@ def interactive_mode():
         style={'description_width': 'initial'},
         layout=widgets.Layout(width='230px')
     )
+    ref_active_dose = widgets.FloatText(
+        value=0.0,
+        description='Min active dose:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='220px')
+    )
+    ref_toxic_dose = widgets.FloatText(
+        value=0.0,
+        description='Min toxic dose:',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='220px')
+    )
+    ref_dose_unit = widgets.Dropdown(
+        options=[('micrograms', 'microgram'), ('milligrams', 'milligram'), ('grams', 'gram')],
+        value='milligram',
+        description='Ref unit:',
+        layout=widgets.Layout(width='200px')
+    )
+    ref_route = widgets.Dropdown(
+        options=['Oral', 'Sublingual', 'Intranasal', 'Subcutaneous', 'Intravenous'],
+        value='Oral',
+        description='Ref route:',
+        layout=widgets.Layout(width='220px')
+    )
+    ref_cmax_fraction = widgets.FloatSlider(
+        value=0.5,
+        min=0.05,
+        max=1.0,
+        step=0.05,
+        description='Threshold/Cmax:',
+        readout_format='.2f',
+        style={'description_width': 'initial'},
+        layout=widgets.Layout(width='330px')
+    )
     run_btn = widgets.Button(description="Search", button_style='primary')
     out = widgets.Output()
 
@@ -625,7 +690,9 @@ def interactive_mode():
     pk_controls = widgets.VBox([
         widgets.HBox([dose_amount, dose_unit, body_weight, duration_input]),
         widgets.HBox([route_select, widgets.VBox([mec_input, mtc_input, injection_conc])]),
-        widgets.HTML("<em>MEC/MTC are optional concentration thresholds in mg/L. Use 0 when unknown.</em>"),
+        widgets.HBox([ref_active_dose, ref_toxic_dose, ref_dose_unit, ref_route]),
+        ref_cmax_fraction,
+        widgets.HTML("<em>MEC/MTC are optional concentration thresholds in mg/L. If left as 0, a minimum active/toxic reference dose can estimate them from predicted reference Cmax.</em>"),
     ])
 
     def on_click(_):
@@ -707,8 +774,33 @@ def interactive_mode():
             else:
                 try:
                     pk_prediction = predict_pk_from_descriptors(descriptors)
-                    mec = mec_input.value if mec_input.value and mec_input.value > 0 else None
-                    mtc = mtc_input.value if mtc_input.value and mtc_input.value > 0 else None
+                    estimated_mec, estimated_mtc, threshold_df = estimate_exposure_thresholds(
+                        pk_prediction,
+                        active_dose_amount=ref_active_dose.value,
+                        toxic_dose_amount=ref_toxic_dose.value,
+                        reference_dose_unit=ref_dose_unit.value,
+                        reference_route=ref_route.value,
+                        body_weight_kg=body_weight.value,
+                        cmax_fraction=ref_cmax_fraction.value,
+                        duration_h=duration_input.value,
+                    )
+                    mec = mec_input.value if mec_input.value and mec_input.value > 0 else estimated_mec
+                    mtc = mtc_input.value if mtc_input.value and mtc_input.value > 0 else estimated_mtc
+                    if not threshold_df.empty:
+                        threshold_display = threshold_df.copy()
+                        for col in ["Estimate (mg/L)", "Reference dose (mg)", "Reference Cmax (mg/L)", "Cmax fraction"]:
+                            if col in threshold_display.columns:
+                                threshold_display[col] = pd.to_numeric(threshold_display[col], errors="coerce").round(4)
+                        display(Markdown("##### Estimated MEC/MTC From Reference Dose"))
+                        show(threshold_display, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                    if mec_input.value and mec_input.value > 0:
+                        display(Markdown(f"> Using manually entered MEC: **{mec:.4g} mg/L**."))
+                    elif estimated_mec is not None:
+                        display(Markdown(f"> Estimated MEC from reference active dose: **{estimated_mec:.4g} mg/L**."))
+                    if mtc_input.value and mtc_input.value > 0:
+                        display(Markdown(f"> Using manually entered MTC: **{mtc:.4g} mg/L**."))
+                    elif estimated_mtc is not None:
+                        display(Markdown(f"> Estimated MTC from reference toxic dose: **{estimated_mtc:.4g} mg/L**."))
                     curve_df, sim_summary = simulate_pk_curves(
                         pk_prediction,
                         dose_amount=dose_amount.value,
@@ -733,9 +825,30 @@ def interactive_mode():
                         display(HTML(make_download_link(sim_display, "pk_simulation_summary.csv", "csv", sep=sep_choice.value)))
                         display(HTML(make_download_link(curve_df, "pk_concentration_curve.csv", "csv", sep=sep_choice.value)))
                     if mec is None:
-                        display(Markdown("> Enter an MEC above 0 mg/L to calculate onset and duration above MEC."))
+                        display(Markdown("> Enter an MEC above 0 mg/L or a minimum active reference dose to calculate onset and duration above MEC."))
                     display(Markdown(f"> {PK_SIMULATION_NOTE}"))
-                    display(Markdown(pk_formula_markdown()))
+                    display_pk_formulas()
+
+                    metabolite_curve_df, metabolite_summary_df = simulate_active_metabolite_curves(
+                        compound,
+                        curve_df,
+                        sim_summary,
+                        pk_prediction,
+                        body_weight_kg=body_weight.value,
+                    )
+                    if not metabolite_curve_df.empty:
+                        display(Markdown("##### Active Metabolite / Active-Moiety Curve"))
+                        metabolite_fig = plot_active_metabolite_curves(metabolite_curve_df)
+                        if metabolite_fig is not None:
+                            display(metabolite_fig)
+                            plt.close(metabolite_fig)
+                        if not metabolite_summary_df.empty:
+                            metabolite_display = metabolite_summary_df.copy()
+                            for col in ["Formation fraction", "Metabolite half-life (h)", "Relative potency vs parent", "Peak active-moiety index", "Peak time (h)"]:
+                                metabolite_display[col] = pd.to_numeric(metabolite_display[col], errors="coerce").round(4)
+                            show(metabolite_display, classes="display compact cell-border", maxBytes=0, pageLength=50)
+                            display(HTML(make_download_link(metabolite_display, "active_metabolite_summary.csv", "csv", sep=sep_choice.value)))
+                            display(HTML(make_download_link(metabolite_curve_df, "active_metabolite_curve.csv", "csv", sep=sep_choice.value)))
                 except Exception as e:
                     display(Markdown(f"**PK simulation error:** {e}"))
 

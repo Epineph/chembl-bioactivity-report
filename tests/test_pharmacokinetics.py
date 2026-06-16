@@ -3,9 +3,11 @@ import unittest
 from chembl_bioactivity_enhanced import (
     active_metabolite_notes_for_compound,
     clean_activity_df,
+    estimate_exposure_thresholds,
     filter_by_threshold,
     pk_profile_from_descriptors,
     predict_pk_from_descriptors,
+    simulate_active_metabolite_curves,
     simulate_pk_curves,
 )
 
@@ -122,6 +124,59 @@ class PharmacokineticPredictionTests(unittest.TestCase):
         self.assertGreater(summary.loc[summary["Route"] == "Intravenous", "Cmax (mg/L)"].iloc[0], 0)
         self.assertEqual(summary.loc[summary["Route"] == "Intravenous", "Volume to administer (mL)"].iloc[0], 2)
         self.assertIn("Concentration (mg/L)", curve.columns)
+
+    def test_reference_dose_can_estimate_mec_and_mtc(self):
+        prediction = predict_pk_from_descriptors(
+            {
+                "MolecularWeight": 310,
+                "XLogP": 2.2,
+                "TPSA": 65,
+                "HBondDonorCount": 1,
+                "HBondAcceptorCount": 4,
+                "RotatableBondCount": 4,
+                "Charge": 0,
+            }
+        )
+
+        mec, mtc, df = estimate_exposure_thresholds(
+            prediction,
+            active_dose_amount=5,
+            toxic_dose_amount=50,
+            reference_dose_unit="milligram",
+            reference_route="Oral",
+            cmax_fraction=0.5,
+        )
+
+        self.assertGreater(mec, 0)
+        self.assertGreater(mtc, mec)
+        self.assertEqual(set(df["Threshold"]), {"Estimated MEC", "Estimated MTC"})
+
+    def test_tramadol_metabolite_curve_is_generated(self):
+        prediction = predict_pk_from_descriptors(
+            {
+                "MolecularWeight": 263.38,
+                "XLogP": 2.5,
+                "TPSA": 32.7,
+                "HBondDonorCount": 1,
+                "HBondAcceptorCount": 2,
+                "RotatableBondCount": 4,
+                "Charge": 0,
+            }
+        )
+        curve, summary = simulate_pk_curves(
+            prediction,
+            dose_amount=50,
+            dose_unit="milligram",
+            routes=["Oral"],
+            body_weight_kg=70,
+        )
+        metabolite_curve, metabolite_summary = simulate_active_metabolite_curves(
+            "tramadol", curve, summary, prediction, body_weight_kg=70
+        )
+
+        self.assertFalse(metabolite_curve.empty)
+        self.assertIn("O-desmethyltramadol", metabolite_summary.loc[0, "Metabolite"])
+        self.assertGreater(metabolite_summary.loc[0, "Relative potency vs parent"], 100)
 
     def test_active_metabolite_notes_include_codeine_caveat(self):
         df = active_metabolite_notes_for_compound("codeine")

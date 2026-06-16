@@ -52,10 +52,19 @@ curves. You can enter a dose in micrograms, milligrams, or grams; choose oral,
 sublingual, intranasal, subcutaneous, and/or intravenous routes; enter optional
 MEC/MTC thresholds in mg/L; and enter an injection concentration in mg/mL to
 calculate `Volume to administer = Prescribed dose / Concentration` for IV or
-subcutaneous routes. The simulator reports Cmax, Tmax, AUC, half-life, onset to
-MEC, duration above MEC, time above MTC, and route-specific assumptions. It also
-adds a small curated active-metabolite/prodrug caveat table for common examples
-such as codeine, diazepam, tramadol, clopidogrel, prednisone, and enalapril.
+subcutaneous routes. If MEC/MTC are unknown, you can provide a minimum active
+dose and/or minimum toxic dose with a reference route; the app estimates the
+threshold from a configurable fraction of the predicted reference-route Cmax.
+The simulator reports Cmax, Tmax, AUC, half-life, onset to MEC, duration above
+MEC, time above MTC, and route-specific assumptions.
+
+The app adds a small curated active-metabolite/prodrug caveat table for common
+examples such as codeine, diazepam, tramadol, clopidogrel, prednisone, and
+enalapril. For selected cases where parent-only curves are especially misleading
+(`tramadol`, `codeine`, and `diazepam`), it also plots a rough active-metabolite
+or active-moiety curve. For tramadol, the M1 curve uses the parent/M1 MOR Ki
+ratio as a potency-weighted approximation, so it should be interpreted as an
+opioid-receptor active-moiety index rather than measured plasma concentration.
 
 These are screening estimates for hypothesis generation, not clinical dosing or
 safety guidance. The most evidence-aligned pieces are descriptor rules such as
@@ -68,7 +77,9 @@ The concentration curves use a one-compartment model with first-order absorption
 for non-IV routes and IV bolus kinetics for the intravenous route. They assume a
 healthy young adult with normal renal and CYP activity and no major enzyme
 inducers or inhibitors. These outputs are not dosing, prescribing, or safety
-guidance.
+guidance. Active-metabolite models are curated heuristics only; the app does not
+automatically infer enzyme pathways, stereochemistry, metabolite potency, or
+genotype-specific metabolism for arbitrary molecules.
 
 You can also call the estimator directly from Python:
 
