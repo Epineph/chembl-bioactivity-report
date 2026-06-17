@@ -21,6 +21,8 @@ clinical dosing, prescribing, or safety tool.
 
 - Looks up a compound by name.
 - Fetches human bioactivity data from ChEMBL.
+- Can average repeated target/activity bioactivity rows after nM normalization,
+  with optional standard-deviation clipping.
 - Resolves PubChem CID and computed descriptors.
 - Estimates structure-based ADME/PK properties from descriptors.
 - Simulates concentration-time curves by route and dose.
@@ -97,6 +99,11 @@ Use the `Report rows/table` control to choose how many rows each displayed table
 and report section should include. Dense concentration-time curves remain CSV
 downloads rather than full report tables. The current report graphs are embedded
 as PNG images, which work in both PDF and standalone HTML.
+
+For pharmacodynamic bioactivity rows, `Mean repeats` averages normalized
+`Value_nM` values within each displayed target/activity group. `Trim SD` removes
+values farther than the selected number of sample standard deviations from that
+group mean before recomputing the displayed mean; `0` disables clipping.
 
 ## Repository Layout
 

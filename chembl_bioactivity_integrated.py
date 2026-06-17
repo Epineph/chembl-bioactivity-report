@@ -36,6 +36,7 @@ from chembl_bioactivity_enhanced import (
     PK_ESTIMATE_NOTE,
     PK_SIMULATION_NOTE,
     active_metabolite_notes_for_compound,
+    aggregate_activity_replicates,
     build_interactive_html_report,
     build_pdf_report,
     clean_activity_df,
@@ -810,6 +811,18 @@ def interactive_mode():
         style={"description_width": "initial"},
         layout=widgets.Layout(width="170px"),
     )
+    aggregate_repeats = widgets.Checkbox(
+        value=True,
+        description="Mean repeats",
+        indent=False,
+        layout=widgets.Layout(width="160px"),
+    )
+    trim_sd = widgets.FloatText(
+        value=0.0,
+        description="Trim SD:",
+        style={"description_width": "initial"},
+        layout=widgets.Layout(width="170px"),
+    )
     sort_asc = widgets.ToggleButtons(
         options=[("Asc", True), ("Desc", False)],
         value=True,
@@ -942,8 +955,11 @@ def interactive_mode():
     out = widgets.Output()
 
     controls = widgets.HBox([text, run_btn])
-    filters = widgets.HBox(
-        [act_filter, sort_col, sort_asc, potency_threshold, sep_choice, report_rows]
+    filters = widgets.VBox(
+        [
+            widgets.HBox([act_filter, sort_col, sort_asc, potency_threshold]),
+            widgets.HBox([aggregate_repeats, trim_sd, sep_choice, report_rows]),
+        ]
     )
     pk_controls = widgets.VBox(
         [
@@ -991,13 +1007,18 @@ def interactive_mode():
                     selected = list(act_filter.value)
                     if selected:
                         df_pd = df_pd[df_pd["Activity"].isin(selected)]
+                    if aggregate_repeats.value:
+                        df_pd = aggregate_activity_replicates(
+                            df_pd, sigma_cutoff=trim_sd.value
+                        )
                     if potency_threshold.value and potency_threshold.value > 0:
                         df_pd = filter_by_threshold(
                             df_pd, max_nM=potency_threshold.value
                         )
-                    df_pd = sort_dataframe(
-                        df_pd, by=sort_col.value, ascending=sort_asc.value
-                    )
+                    if sort_col.value in df_pd.columns:
+                        df_pd = sort_dataframe(
+                            df_pd, by=sort_col.value, ascending=sort_asc.value
+                        )
 
                     display(
                         Markdown("### Pharmacodynamic Bioactivities (Homo sapiens)")

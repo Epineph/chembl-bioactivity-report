@@ -345,6 +345,95 @@ def clean_activity_df(activities: list[dict[str, Any]]) -> pd.DataFrame:
     return df[df["Value"].astype(str).str.len() > 0].reset_index(drop=True)
 
 
+def aggregate_activity_replicates(
+    df: pd.DataFrame,
+    group_cols: tuple[str, ...] = ("Target", "Activity"),
+    value_col: str = "Value_nM",
+    sigma_cutoff: float | None = None,
+) -> pd.DataFrame:
+    """Average repeated pharmacodynamic values, optionally with SD clipping.
+
+    Numeric rows are summarized within each target/activity group after
+    conversion to nM. Non-numeric rows are retained because their units cannot be
+    compared safely.
+    """
+    if df is None or df.empty or value_col not in df.columns:
+        return df
+
+    missing_group_cols = [col for col in group_cols if col not in df.columns]
+    if missing_group_cols:
+        return df.copy()
+
+    out_rows: list[dict[str, Any]] = []
+    numeric_values = pd.to_numeric(df[value_col], errors="coerce")
+    cutoff = _as_float(sigma_cutoff)
+    cutoff = cutoff if cutoff is not None and cutoff > 0 else None
+
+    grouped = df.assign(__numeric_value__=numeric_values).groupby(
+        list(group_cols), dropna=False, sort=False
+    )
+    for keys, group in grouped:
+        numeric_group = group[group["__numeric_value__"].notna()]
+        non_numeric_group = group[group["__numeric_value__"].isna()]
+
+        if not numeric_group.empty:
+            values = numeric_group["__numeric_value__"].astype(float)
+            keep_mask = pd.Series(True, index=values.index)
+            if cutoff is not None and len(values) >= 3:
+                center = values.mean()
+                sd = values.std(ddof=1)
+                if sd > 0 and not math.isnan(sd):
+                    keep_mask = (values - center).abs() <= cutoff * sd
+                    if not keep_mask.any():
+                        keep_mask = pd.Series(True, index=values.index)
+
+            retained = values[keep_mask]
+            mean_nm = retained.mean()
+            sd_nm = retained.std(ddof=1) if len(retained) >= 2 else None
+            excluded = int(len(values) - len(retained))
+
+            first = numeric_group.iloc[0].drop(labels="__numeric_value__").to_dict()
+            if not isinstance(keys, tuple):
+                keys = (keys,)
+            for col, key in zip(group_cols, keys):
+                first[col] = key
+
+            activity_type = str(first.get("Activity", "")).strip().upper()
+            first.update(
+                {
+                    "Value": round(mean_nm, 3),
+                    "Units": "nM",
+                    value_col: round(mean_nm, 3),
+                    "Kd (nM) (from KA)": (
+                        round(mean_nm, 3) if activity_type == "KA" else ""
+                    ),
+                    "Replicates": int(len(values)),
+                    "Retained": int(len(retained)),
+                    "Excluded": excluded,
+                    "SD_nM": round(sd_nm, 3) if sd_nm is not None else "",
+                }
+            )
+            out_rows.append(first)
+
+        for _, row in non_numeric_group.drop(columns="__numeric_value__").iterrows():
+            retained_row = row.to_dict()
+            retained_row.update(
+                {
+                    "Replicates": "",
+                    "Retained": "",
+                    "Excluded": "",
+                    "SD_nM": "",
+                }
+            )
+            out_rows.append(retained_row)
+
+    columns = list(df.columns)
+    for col in ["Replicates", "Retained", "Excluded", "SD_nM"]:
+        if col not in columns:
+            columns.append(col)
+    return pd.DataFrame(out_rows, columns=columns).reset_index(drop=True)
+
+
 def filter_by_threshold(
     df: pd.DataFrame, column: str = "Value_nM", max_nM: float = 10_000
 ) -> pd.DataFrame:

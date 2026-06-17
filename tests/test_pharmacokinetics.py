@@ -5,6 +5,7 @@ import pandas as pd
 
 from chembl_bioactivity_enhanced import (
     active_metabolite_notes_for_compound,
+    aggregate_activity_replicates,
     build_interactive_html_report,
     build_pdf_report,
     clean_activity_df,
@@ -354,6 +355,79 @@ class ActivityCleanupTests(unittest.TestCase):
         filtered = filter_by_threshold(df, max_nM=1000)
 
         self.assertEqual(list(filtered["Target"]), ["CHEMBL2"])
+
+    def test_activity_replicates_are_averaged(self):
+        df = clean_activity_df(
+            [
+                {
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "Ki",
+                    "standard_value": "10",
+                    "standard_units": "nM",
+                },
+                {
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "Ki",
+                    "standard_value": "20",
+                    "standard_units": "nM",
+                },
+            ]
+        )
+
+        aggregated = aggregate_activity_replicates(df)
+
+        self.assertEqual(len(aggregated), 1)
+        self.assertEqual(aggregated.loc[0, "Value_nM"], 15)
+        self.assertEqual(aggregated.loc[0, "Units"], "nM")
+        self.assertEqual(aggregated.loc[0, "Replicates"], 2)
+        self.assertEqual(aggregated.loc[0, "Retained"], 2)
+        self.assertEqual(aggregated.loc[0, "Excluded"], 0)
+        self.assertAlmostEqual(aggregated.loc[0, "SD_nM"], 7.071, places=3)
+
+    def test_activity_replicate_mean_can_sigma_clip_outliers(self):
+        df = clean_activity_df(
+            [
+                {
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "IC50",
+                    "standard_value": value,
+                    "standard_units": "nM",
+                }
+                for value in ["10", "11", "12", "100"]
+            ]
+        )
+
+        aggregated = aggregate_activity_replicates(df, sigma_cutoff=1.0)
+
+        self.assertEqual(aggregated.loc[0, "Value_nM"], 11)
+        self.assertEqual(aggregated.loc[0, "Replicates"], 4)
+        self.assertEqual(aggregated.loc[0, "Retained"], 3)
+        self.assertEqual(aggregated.loc[0, "Excluded"], 1)
+
+    def test_activity_aggregation_preserves_unknown_units(self):
+        df = clean_activity_df(
+            [
+                {
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "Ki",
+                    "standard_value": "5",
+                    "standard_units": "unknown",
+                },
+                {
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "Ki",
+                    "standard_value": "10",
+                    "standard_units": "nM",
+                },
+            ]
+        )
+
+        aggregated = aggregate_activity_replicates(df)
+
+        self.assertEqual(len(aggregated), 2)
+        self.assertEqual(aggregated.loc[0, "Value_nM"], 10)
+        self.assertTrue(pd.isna(aggregated.loc[1, "Value_nM"]))
+        self.assertEqual(aggregated.loc[1, "Units"], "unknown")
 
 
 class ReportExportTests(unittest.TestCase):
