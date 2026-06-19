@@ -131,6 +131,10 @@ class PharmacokineticPredictionTests(unittest.TestCase):
         self.assertIn("Missing required descriptor", df.loc[0, "Evidence / formula"])
         self.assertIn("TPSA", missing_pk_descriptor_names({"MolecularWeight": 300}))
 
+    def test_pk_prediction_rejects_incomplete_descriptors(self):
+        with self.assertRaisesRegex(ValueError, "incomplete descriptors"):
+            predict_pk_from_descriptors({"MolecularWeight": 300})
+
     def test_descriptor_fallback_fills_missing_values_without_overwriting(self):
         merged = merge_pk_descriptor_fallback(
             {
@@ -334,6 +338,35 @@ class ActivityCleanupTests(unittest.TestCase):
         self.assertEqual(df.loc[1, "Value_nM"], 1)
         self.assertEqual(df.loc[1, "Kd (nM) (from KA)"], 1)
 
+    def test_activity_cleanup_preserves_assay_context(self):
+        df = clean_activity_df(
+            [
+                {
+                    "target_pref_name": "Human receptor",
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "Ki",
+                    "standard_relation": "<",
+                    "standard_value": "5",
+                    "standard_units": "nM",
+                    "pchembl_value": "8.3",
+                    "assay_chembl_id": "CHEMBLASSAY1",
+                    "assay_type": "B",
+                    "assay_description": "Binding assay",
+                    "data_validity_comment": "Outside typical range",
+                    "potential_duplicate": 1,
+                }
+            ]
+        )
+
+        self.assertEqual(df.loc[0, "Target"], "Human receptor")
+        self.assertEqual(df.loc[0, "Relation"], "<")
+        self.assertEqual(df.loc[0, "pChEMBL"], "8.3")
+        self.assertEqual(df.loc[0, "Assay ChEMBL ID"], "CHEMBLASSAY1")
+        self.assertEqual(df.loc[0, "Assay Type"], "B")
+        self.assertEqual(df.loc[0, "Assay Description"], "Binding assay")
+        self.assertEqual(df.loc[0, "Data Validity"], "Outside typical range")
+        self.assertEqual(df.loc[0, "Potential Duplicate"], 1)
+
     def test_threshold_filter_preserves_unknown_units(self):
         df = clean_activity_df(
             [
@@ -383,6 +416,49 @@ class ActivityCleanupTests(unittest.TestCase):
         self.assertEqual(aggregated.loc[0, "Retained"], 2)
         self.assertEqual(aggregated.loc[0, "Excluded"], 0)
         self.assertAlmostEqual(aggregated.loc[0, "SD_nM"], 7.071, places=3)
+
+    def test_activity_aggregation_keeps_assay_context_separate(self):
+        df = clean_activity_df(
+            [
+                {
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "Ki",
+                    "standard_relation": "=",
+                    "standard_value": "10",
+                    "standard_units": "nM",
+                    "assay_chembl_id": "CHEMBLASSAY1",
+                    "assay_type": "B",
+                },
+                {
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "Ki",
+                    "standard_relation": "=",
+                    "standard_value": "20",
+                    "standard_units": "nM",
+                    "assay_chembl_id": "CHEMBLASSAY1",
+                    "assay_type": "B",
+                },
+                {
+                    "target_chembl_id": "CHEMBL1",
+                    "standard_type": "Ki",
+                    "standard_relation": "=",
+                    "standard_value": "100",
+                    "standard_units": "nM",
+                    "assay_chembl_id": "CHEMBLASSAY2",
+                    "assay_type": "B",
+                },
+            ]
+        )
+
+        aggregated = aggregate_activity_replicates(df)
+        assay_1 = aggregated[aggregated["Assay ChEMBL ID"] == "CHEMBLASSAY1"].iloc[0]
+        assay_2 = aggregated[aggregated["Assay ChEMBL ID"] == "CHEMBLASSAY2"].iloc[0]
+
+        self.assertEqual(len(aggregated), 2)
+        self.assertEqual(assay_1["Value_nM"], 15)
+        self.assertEqual(assay_1["Replicates"], 2)
+        self.assertEqual(assay_2["Value_nM"], 100)
+        self.assertEqual(assay_2["Replicates"], 1)
 
     def test_activity_replicate_mean_can_sigma_clip_outliers(self):
         df = clean_activity_df(

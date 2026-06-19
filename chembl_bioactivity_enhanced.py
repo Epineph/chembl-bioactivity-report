@@ -326,19 +326,48 @@ def clean_activity_df(activities: list[dict[str, Any]]) -> pd.DataFrame:
         units = activity.get("standard_units") or ""
         value_nm = _activity_value_to_nm(activity_type, value, units)
         kd_nm = value_nm if (activity_type or "").strip().upper() == "KA" else None
+        relation = _first_present(activity, "standard_relation", "relation") or ""
+        pchembl = _first_present(activity, "pchembl_value", "pChEMBL") or ""
+        assay_id = _first_present(activity, "assay_chembl_id", "assay_id") or ""
+        assay_type = _first_present(activity, "assay_type") or ""
+        assay_description = _first_present(activity, "assay_description") or ""
+        validity = _first_present(activity, "data_validity_comment") or ""
+        duplicate = _first_present(activity, "potential_duplicate")
+        duplicate = "" if duplicate is None else duplicate
 
         rows.append(
             {
                 "Target": target,
                 "Activity": activity_type,
+                "Relation": relation,
                 "Value": value,
                 "Units": units,
                 "Value_nM": round(value_nm, 3) if value_nm is not None else None,
+                "pChEMBL": pchembl,
                 "Kd (nM) (from KA)": round(kd_nm, 3) if kd_nm is not None else "",
+                "Assay ChEMBL ID": assay_id,
+                "Assay Type": assay_type,
+                "Assay Description": assay_description,
+                "Data Validity": validity,
+                "Potential Duplicate": duplicate,
             }
         )
 
-    columns = ["Target", "Activity", "Value", "Units", "Value_nM", "Kd (nM) (from KA)"]
+    columns = [
+        "Target",
+        "Activity",
+        "Relation",
+        "Value",
+        "Units",
+        "Value_nM",
+        "pChEMBL",
+        "Kd (nM) (from KA)",
+        "Assay ChEMBL ID",
+        "Assay Type",
+        "Assay Description",
+        "Data Validity",
+        "Potential Duplicate",
+    ]
     df = pd.DataFrame(rows, columns=columns)
     if df.empty:
         return df
@@ -347,21 +376,31 @@ def clean_activity_df(activities: list[dict[str, Any]]) -> pd.DataFrame:
 
 def aggregate_activity_replicates(
     df: pd.DataFrame,
-    group_cols: tuple[str, ...] = ("Target", "Activity"),
+    group_cols: tuple[str, ...] = (
+        "Target",
+        "Activity",
+        "Assay ChEMBL ID",
+        "Assay Type",
+        "Assay Description",
+        "Relation",
+        "Data Validity",
+        "Potential Duplicate",
+    ),
     value_col: str = "Value_nM",
     sigma_cutoff: float | None = None,
 ) -> pd.DataFrame:
     """Average repeated pharmacodynamic values, optionally with SD clipping.
 
     Numeric rows are summarized within each target/activity group after
-    conversion to nM. Non-numeric rows are retained because their units cannot be
-    compared safely.
+    conversion to nM. Assay and relation fields are included in the default
+    grouping when present so heterogeneous rows are not averaged together.
+    Non-numeric rows are retained because their units cannot be compared safely.
     """
     if df is None or df.empty or value_col not in df.columns:
         return df
 
-    missing_group_cols = [col for col in group_cols if col not in df.columns]
-    if missing_group_cols:
+    effective_group_cols = tuple(col for col in group_cols if col in df.columns)
+    if not effective_group_cols:
         return df.copy()
 
     out_rows: list[dict[str, Any]] = []
@@ -370,7 +409,7 @@ def aggregate_activity_replicates(
     cutoff = cutoff if cutoff is not None and cutoff > 0 else None
 
     grouped = df.assign(__numeric_value__=numeric_values).groupby(
-        list(group_cols), dropna=False, sort=False
+        list(effective_group_cols), dropna=False, sort=False
     )
     for keys, group in grouped:
         numeric_group = group[group["__numeric_value__"].notna()]
@@ -395,7 +434,7 @@ def aggregate_activity_replicates(
             first = numeric_group.iloc[0].drop(labels="__numeric_value__").to_dict()
             if not isinstance(keys, tuple):
                 keys = (keys,)
-            for col, key in zip(group_cols, keys):
+            for col, key in zip(effective_group_cols, keys):
                 first[col] = key
 
             activity_type = str(first.get("Activity", "")).strip().upper()
@@ -613,7 +652,15 @@ def predict_pk_from_descriptors(descriptors: dict[str, Any]) -> dict[str, Any]:
     descriptor relationships. They are intended for ranking and hypothesis
     generation, not individual-patient prediction.
     """
-    d = normalize_pk_descriptors(descriptors)
+    completed_descriptors = complete_pk_descriptors(descriptors)
+    if not has_complete_pk_descriptors(completed_descriptors):
+        missing = ", ".join(missing_pk_descriptor_names(completed_descriptors))
+        raise ValueError(
+            "Cannot predict PK from incomplete descriptors; missing required "
+            f"descriptor(s): {missing}."
+        )
+
+    d = normalize_pk_descriptors(completed_descriptors)
     mw = float(d["mw"] or 0.0)
     logp = float(d["logp"] or 0.0)
     tpsa = float(d["tpsa"] or 0.0)

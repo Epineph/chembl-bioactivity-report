@@ -43,6 +43,8 @@ from chembl_bioactivity_enhanced import (
     complete_pk_descriptors,
     estimate_exposure_thresholds,
     filter_by_threshold,
+    has_complete_pk_descriptors,
+    missing_pk_descriptor_names,
     pk_estimate_formula_items,
     pk_formula_items,
     pk_profile_from_descriptors,
@@ -158,7 +160,22 @@ def fetch_activities(chembl_id: str) -> list[dict]:
     act_client = new_client.activity
     acts = act_client.filter(
         molecule_chembl_id=chembl_id, target_organism__iexact="Homo sapiens"
-    ).only(["target_chembl_id", "standard_type", "standard_value", "standard_units"])
+    ).only(
+        [
+            "target_chembl_id",
+            "target_pref_name",
+            "standard_type",
+            "standard_relation",
+            "standard_value",
+            "standard_units",
+            "pchembl_value",
+            "assay_chembl_id",
+            "assay_type",
+            "assay_description",
+            "data_validity_comment",
+            "potential_duplicate",
+        ]
+    )
     return list(acts)
 
 
@@ -172,15 +189,25 @@ def fetch_target_names(target_ids: set[str]) -> dict[str, str]:
 
 
 def build_activity_df(acts: list[dict]) -> pd.DataFrame:
-    target_ids = {a.get("target_chembl_id") for a in acts if a.get("target_chembl_id")}
+    target_ids = {
+        a.get("target_chembl_id")
+        for a in acts
+        if a.get("target_chembl_id") and not a.get("target_pref_name")
+    }
     name_map = fetch_target_names(target_ids) if target_ids else {}
     enriched = []
     for activity in acts:
         target_id = activity.get("target_chembl_id")
+        target_name = (
+            activity.get("target_pref_name")
+            or name_map.get(target_id)
+            or target_id
+            or "Unknown"
+        )
         enriched.append(
             {
                 **activity,
-                "target_pref_name": name_map.get(target_id, target_id or "Unknown"),
+                "target_pref_name": target_name,
             }
         )
     return clean_activity_df(enriched)
@@ -261,11 +288,10 @@ def pubchem_basic_props_df(cid: int) -> pd.DataFrame:
                 "FormalCharge",
             ]
             df = pcp.get_properties(props, cid, as_dataframe=True)
-            df.insert(0, "Source", "PubChem (computed)")
-            tidy = df.T.reset_index().rename(columns={"index": "Property"})
-            value_cols = [col for col in tidy.columns if col != "Property"]
-            if value_cols:
-                tidy = tidy.rename(columns={value_cols[0]: "Value"})
+            if df.empty:
+                return pd.DataFrame(columns=["Source", "Property", "Value"])
+            tidy = df.iloc[0].dropna().rename_axis("Property").reset_index(name="Value")
+            tidy.insert(0, "Source", "PubChem (computed)")
             return tidy
         except Exception:
             pass
@@ -796,10 +822,17 @@ def interactive_mode():
         options=[
             "Target",
             "Activity",
+            "Relation",
             "Value",
             "Units",
             "Value_nM",
+            "pChEMBL",
             "Kd (nM) (from KA)",
+            "Assay ChEMBL ID",
+            "Assay Type",
+            "Assay Description",
+            "Data Validity",
+            "Potential Duplicate",
         ],
         value="Target",
         description="Sort by:",
@@ -1142,6 +1175,14 @@ def interactive_mode():
                 display(
                     Markdown(
                         "> PK simulation unavailable because PubChem/RDKit descriptors were not available."
+                    )
+                )
+            elif not has_complete_pk_descriptors(descriptors):
+                missing = ", ".join(missing_pk_descriptor_names(descriptors))
+                display(
+                    Markdown(
+                        "> PK simulation unavailable because required descriptors "
+                        f"are incomplete: {missing}."
                     )
                 )
             else:

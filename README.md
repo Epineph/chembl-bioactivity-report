@@ -101,9 +101,11 @@ downloads rather than full report tables. The current report graphs are embedded
 as PNG images, which work in both PDF and standalone HTML.
 
 For pharmacodynamic bioactivity rows, `Mean repeats` averages normalized
-`Value_nM` values within each displayed target/activity group. `Trim SD` removes
-values farther than the selected number of sample standard deviations from that
-group mean before recomputing the displayed mean; `0` disables clipping.
+`Value_nM` values within matching target/activity/assay/relation context.
+This avoids averaging censored or assay-heterogeneous measurements together.
+`Trim SD` removes values farther than the selected number of sample standard
+deviations from that group mean before recomputing the displayed mean; `0`
+disables clipping.
 
 ## Repository Layout
 
