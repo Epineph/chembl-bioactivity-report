@@ -11,10 +11,15 @@ from __future__ import annotations
 import base64
 import html
 import io
+import json
 import math
+import os
 import time
-from typing import Any
+from pathlib import Path
+from typing import Any, Sequence
+from urllib.parse import urlencode
 
+import numpy as np
 import pandas as pd
 import requests
 
@@ -23,11 +28,17 @@ try:  # Optional: available in the Binder environment, but tests should not requ
 except Exception:  # pragma: no cover - optional dependency
     pcp = None
 
+try:  # Optional: used for ChEMBL multitask target prediction.
+    import onnxruntime as ort
+except Exception:  # pragma: no cover - optional dependency
+    ort = None
+
 try:  # Optional: used for SMILES-derived descriptors when available.
-    from rdkit import Chem
+    from rdkit import Chem, DataStructs
     from rdkit.Chem import Crippen, Descriptors, Lipinski, rdMolDescriptors
 except Exception:  # pragma: no cover - optional dependency
     Chem = None
+    DataStructs = None
     Crippen = None
     Descriptors = None
     Lipinski = None
@@ -51,11 +62,47 @@ PK_SIMULATION_NOTE = (
     "than elimination."
 )
 
+PD_TARGET_PREDICTION_NOTE = (
+    "Predicted target hypotheses use ChEMBL's ligand-based multitask model. "
+    "Scores rank possible molecular targets and off-targets; they do not infer "
+    "agonism, antagonism, efficacy, tissue response, clinical effect, or safety."
+)
+
 _PUG_PROPERTY_URL = (
     "https://pubchem.ncbi.nlm.nih.gov/rest/pug/compound/cid/{cid}/property/"
     "MolecularWeight,XLogP,TPSA,HBondDonorCount,HBondAcceptorCount,"
     "RotatableBondCount,Charge,CanonicalSMILES,IsomericSMILES/JSON"
 )
+_CHEMBL_TARGET_URL = "https://www.ebi.ac.uk/chembl/api/data/target.json"
+_CHEMBL_MULTITASK_VERSION = "chembl_36_model"
+_CHEMBL_MULTITASK_BASE_URL = (
+    "https://raw.githubusercontent.com/chembl/chembl_multitask_model/main/"
+    f"trained_models/{_CHEMBL_MULTITASK_VERSION}"
+)
+_CHEMBL_MULTITASK_MODEL_FILE = "chembl_36_multitask_q8.onnx"
+_CHEMBL_MULTITASK_TARGETS_FILE = "targets_36_all.json"
+_CHEMBL_MULTITASK_MODEL_URL = (
+    f"{_CHEMBL_MULTITASK_BASE_URL}/{_CHEMBL_MULTITASK_MODEL_FILE}"
+)
+_CHEMBL_MULTITASK_TARGETS_URL = (
+    f"{_CHEMBL_MULTITASK_BASE_URL}/{_CHEMBL_MULTITASK_TARGETS_FILE}"
+)
+_CHEMBL_MULTITASK_MODEL_LABEL = "ChEMBL 36 multitask q8 ONNX"
+_CHEMBL_MULTITASK_FP_SIZE = 1024
+_CHEMBL_MULTITASK_FP_RADIUS = 2
+
+_PD_TARGET_COLUMNS = [
+    "Rank",
+    "Target ChEMBL ID",
+    "Target",
+    "Organism",
+    "Target Type",
+    "Prediction Score",
+    "Model",
+    "Evidence / limitation",
+]
+_CHEMBL_TARGET_METADATA_CACHE: dict[str, dict[str, Any]] = {}
+_CHEMBL_MULTITASK_SESSION_CACHE: dict[str, Any] = {}
 
 _HTTP_SESSION = requests.Session()
 _HTTP_SESSION.headers.update(
@@ -590,6 +637,316 @@ def complete_pk_descriptors(
             completed, descriptors_from_smiles(str(smiles))
         )
     return completed
+
+
+def _chembl_multitask_cache_dir(cache_dir: str | os.PathLike[str] | None = None) -> Path:
+    if cache_dir is not None:
+        return Path(cache_dir).expanduser()
+    env_dir = os.environ.get("CHEMBL_MULTITASK_MODEL_DIR")
+    if env_dir:
+        return Path(env_dir).expanduser()
+    return (
+        Path.home()
+        / ".cache"
+        / "chembl_bioactivity_report"
+        / _CHEMBL_MULTITASK_VERSION
+    )
+
+
+def chembl_multitask_asset_paths(
+    cache_dir: str | os.PathLike[str] | None = None,
+) -> dict[str, Path]:
+    """Return local paths for the ChEMBL multitask ONNX model assets."""
+    base_dir = _chembl_multitask_cache_dir(cache_dir)
+    return {
+        "model": base_dir / _CHEMBL_MULTITASK_MODEL_FILE,
+        "targets": base_dir / _CHEMBL_MULTITASK_TARGETS_FILE,
+    }
+
+
+def _download_file(url: str, destination: Path, timeout: float = 90.0) -> None:
+    destination.parent.mkdir(parents=True, exist_ok=True)
+    response = _http_get(url, timeout=timeout)
+    if response is None or not response.ok:
+        status = "no response" if response is None else f"HTTP {response.status_code}"
+        raise RuntimeError(f"Could not download {url}: {status}.")
+
+    temporary_path = destination.with_suffix(f"{destination.suffix}.tmp")
+    temporary_path.write_bytes(response.content)
+    temporary_path.replace(destination)
+
+
+def ensure_chembl_multitask_assets(
+    cache_dir: str | os.PathLike[str] | None = None,
+    download: bool = True,
+) -> dict[str, Path]:
+    """Ensure the ChEMBL multitask model and ordered target list are available."""
+    paths = chembl_multitask_asset_paths(cache_dir)
+    missing = [name for name, path in paths.items() if not path.exists()]
+    if missing and not download:
+        missing_files = ", ".join(str(paths[name]) for name in missing)
+        raise FileNotFoundError(
+            "ChEMBL multitask model asset(s) are missing and download=False: "
+            f"{missing_files}."
+        )
+
+    if "model" in missing:
+        _download_file(_CHEMBL_MULTITASK_MODEL_URL, paths["model"])
+    if "targets" in missing:
+        _download_file(_CHEMBL_MULTITASK_TARGETS_URL, paths["targets"])
+    return paths
+
+
+def load_chembl_multitask_targets(
+    cache_dir: str | os.PathLike[str] | None = None,
+    download: bool = True,
+) -> list[str]:
+    """Load the ordered ChEMBL target IDs matching the multitask ONNX outputs."""
+    paths = ensure_chembl_multitask_assets(cache_dir=cache_dir, download=download)
+    try:
+        payload = json.loads(paths["targets"].read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise ValueError(
+            f"Could not parse ChEMBL target list: {paths['targets']}."
+        ) from exc
+
+    if isinstance(payload, list):
+        target_ids = [str(item) for item in payload]
+    elif isinstance(payload, dict):
+        target_ids = []
+        for key in ("targets", "target_ids", "target_chembl_ids"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                target_ids = [str(item) for item in value]
+                break
+    else:
+        target_ids = []
+
+    if not target_ids:
+        raise ValueError("ChEMBL multitask target list is empty or unsupported.")
+    return target_ids
+
+
+def _chembl_multitask_fingerprint(smiles: str) -> np.ndarray:
+    if Chem is None or DataStructs is None or rdMolDescriptors is None:
+        raise RuntimeError(
+            "RDKit is required for ChEMBL multitask target prediction."
+        )
+    mol = Chem.MolFromSmiles(str(smiles).strip())
+    if mol is None:
+        raise ValueError("Cannot predict targets from an invalid SMILES string.")
+
+    fingerprint = rdMolDescriptors.GetMorganFingerprintAsBitVect(
+        mol,
+        _CHEMBL_MULTITASK_FP_RADIUS,
+        nBits=_CHEMBL_MULTITASK_FP_SIZE,
+    )
+    values = np.zeros((_CHEMBL_MULTITASK_FP_SIZE,), dtype=np.int8)
+    DataStructs.ConvertToNumpyArray(fingerprint, values)
+    return values.astype(np.float32)
+
+
+def _chembl_multitask_session(model_path: Path):
+    if ort is None:
+        raise RuntimeError(
+            "onnxruntime is required for ChEMBL multitask target prediction."
+        )
+
+    key = str(model_path)
+    if key not in _CHEMBL_MULTITASK_SESSION_CACHE:
+        _CHEMBL_MULTITASK_SESSION_CACHE[key] = ort.InferenceSession(
+            key,
+            providers=["CPUExecutionProvider"],
+        )
+    return _CHEMBL_MULTITASK_SESSION_CACHE[key]
+
+
+def _default_target_metadata(target_id: str) -> dict[str, Any]:
+    return {
+        "target_chembl_id": target_id,
+        "pref_name": target_id,
+        "organism": "Unknown",
+        "target_type": "Unknown",
+    }
+
+
+def fetch_chembl_target_metadata(
+    target_ids: Sequence[str],
+    chunk_size: int = 100,
+    timeout: float = 8.0,
+) -> dict[str, dict[str, Any]]:
+    """Fetch compact target metadata for ChEMBL target IDs.
+
+    Metadata lookup is deliberately separate from model inference. A temporary
+    ChEMBL metadata failure should not corrupt model scores or target ordering.
+    """
+    ordered_ids = [str(target_id) for target_id in target_ids if target_id]
+    missing_ids = [
+        target_id
+        for target_id in dict.fromkeys(ordered_ids)
+        if target_id not in _CHEMBL_TARGET_METADATA_CACHE
+    ]
+
+    chunk_size = max(1, int(chunk_size or 100))
+    for start in range(0, len(missing_ids), chunk_size):
+        chunk = missing_ids[start : start + chunk_size]
+        query = urlencode(
+            {"target_chembl_id__in": ",".join(chunk), "limit": len(chunk)},
+            safe=",",
+        )
+        response = _http_get(
+            f"{_CHEMBL_TARGET_URL}?{query}",
+            timeout=timeout,
+            retries=1,
+        )
+        if response is None or not response.ok:
+            continue
+        try:
+            payload = response.json()
+        except ValueError:
+            continue
+
+        for record in payload.get("targets", []):
+            target_id = record.get("target_chembl_id")
+            if not target_id:
+                continue
+            _CHEMBL_TARGET_METADATA_CACHE[str(target_id)] = {
+                "target_chembl_id": str(target_id),
+                "pref_name": record.get("pref_name") or str(target_id),
+                "organism": record.get("organism") or "Unknown",
+                "target_type": record.get("target_type") or "Unknown",
+            }
+
+    return {
+        target_id: _CHEMBL_TARGET_METADATA_CACHE.get(
+            target_id, _default_target_metadata(target_id)
+        )
+        for target_id in ordered_ids
+    }
+
+
+def _flatten_chembl_multitask_outputs(outputs: Sequence[Any]) -> np.ndarray:
+    if not outputs:
+        return np.array([], dtype=np.float32)
+
+    if len(outputs) == 1:
+        return np.asarray(outputs[0], dtype=np.float32).reshape(-1)
+
+    values = []
+    for output in outputs:
+        arr = np.asarray(output, dtype=np.float32).reshape(-1)
+        if arr.size:
+            values.append(float(arr[0]))
+    return np.asarray(values, dtype=np.float32)
+
+
+def build_pd_target_prediction_df(
+    scores: Sequence[float],
+    target_ids: Sequence[str],
+    target_metadata: dict[str, dict[str, Any]] | None = None,
+    top_n: int = 25,
+    human_only: bool = True,
+    min_score: float | None = None,
+    model_label: str = _CHEMBL_MULTITASK_MODEL_LABEL,
+) -> pd.DataFrame:
+    """Format multitask target scores as a pharmacodynamic hypothesis table."""
+    scores_array = np.asarray(scores, dtype=float).reshape(-1)
+    targets = [str(target_id) for target_id in target_ids]
+    if scores_array.size != len(targets):
+        raise ValueError(
+            "Target prediction score count does not match target ID count "
+            f"({scores_array.size} scores vs {len(targets)} target IDs)."
+        )
+    if scores_array.size == 0 or top_n <= 0:
+        return pd.DataFrame(columns=_PD_TARGET_COLUMNS)
+
+    metadata = target_metadata or {}
+    records = []
+    for index in np.argsort(-scores_array):
+        target_id = targets[int(index)]
+        score = float(scores_array[int(index)])
+        if min_score is not None and score < min_score:
+            continue
+
+        target_info = metadata.get(target_id, _default_target_metadata(target_id))
+        organism = target_info.get("organism") or "Unknown"
+        if human_only and organism not in {"Homo sapiens", "Unknown"}:
+            continue
+
+        limitation = (
+            "Ligand-based target/off-target hypothesis; not activity direction, "
+            "efficacy, tissue response, clinical effect, or safety."
+        )
+        if organism == "Unknown":
+            limitation = (
+                f"{limitation} Target metadata unavailable; organism is not "
+                "confirmed."
+            )
+
+        records.append(
+            {
+                "Rank": len(records) + 1,
+                "Target ChEMBL ID": target_id,
+                "Target": target_info.get("pref_name") or target_id,
+                "Organism": organism,
+                "Target Type": target_info.get("target_type") or "Unknown",
+                "Prediction Score": round(score, 4),
+                "Model": model_label,
+                "Evidence / limitation": limitation,
+            }
+        )
+        if len(records) >= int(top_n):
+            break
+
+    return pd.DataFrame.from_records(records, columns=_PD_TARGET_COLUMNS)
+
+
+def predict_pd_targets_from_smiles(
+    smiles: str,
+    top_n: int = 25,
+    human_only: bool = True,
+    min_score: float | None = None,
+    cache_dir: str | os.PathLike[str] | None = None,
+    download: bool = True,
+) -> pd.DataFrame:
+    """Predict likely ChEMBL targets/off-targets for a molecule SMILES string."""
+    if not smiles or not str(smiles).strip():
+        raise ValueError("A SMILES string is required for target prediction.")
+
+    paths = ensure_chembl_multitask_assets(cache_dir=cache_dir, download=download)
+    target_ids = load_chembl_multitask_targets(cache_dir=cache_dir, download=False)
+    session = _chembl_multitask_session(paths["model"])
+
+    model_inputs = session.get_inputs()
+    if not model_inputs:
+        raise RuntimeError("ChEMBL multitask ONNX model has no input nodes.")
+    fingerprint = _chembl_multitask_fingerprint(smiles)
+    outputs = session.run(None, {model_inputs[0].name: fingerprint})
+    scores = _flatten_chembl_multitask_outputs(outputs)
+    output_names = [output.name for output in session.get_outputs()]
+
+    if scores.size == len(output_names) and all(
+        name.startswith("CHEMBL") for name in output_names
+    ):
+        target_ids = output_names
+    elif scores.size != len(target_ids):
+        raise RuntimeError(
+            "ChEMBL multitask ONNX output count does not match the target "
+            f"list ({scores.size} scores vs {len(target_ids)} target IDs)."
+        )
+
+    candidate_count = min(len(target_ids), max(int(top_n) * 4, int(top_n) + 25))
+    candidate_indices = np.argsort(-scores)[:candidate_count]
+    candidate_targets = [target_ids[int(index)] for index in candidate_indices]
+    target_metadata = fetch_chembl_target_metadata(candidate_targets)
+    return build_pd_target_prediction_df(
+        scores,
+        target_ids,
+        target_metadata=target_metadata,
+        top_n=top_n,
+        human_only=human_only,
+        min_score=min_score,
+    )
 
 
 def normalize_pk_descriptors(

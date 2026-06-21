@@ -5,6 +5,7 @@ itables
 jupyterlab
 matplotlib
 numpy
+onnxruntime
 openpyxl
 pandas
 pillow

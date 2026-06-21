@@ -11,6 +11,7 @@ dependencies:
   - ipykernel
   - ipywidgets>=8
   - itables>=2.0
+  - onnxruntime
   - pillow
   - matplotlib
   - openpyxl

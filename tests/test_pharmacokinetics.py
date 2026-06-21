@@ -1,12 +1,15 @@
 import io
 import unittest
+from unittest import mock
 
+import numpy as np
 import pandas as pd
 
 from chembl_bioactivity_enhanced import (
     active_metabolite_notes_for_compound,
     aggregate_activity_replicates,
     build_interactive_html_report,
+    build_pd_target_prediction_df,
     build_pdf_report,
     clean_activity_df,
     estimate_exposure_thresholds,
@@ -17,6 +20,7 @@ from chembl_bioactivity_enhanced import (
     missing_pk_descriptor_names,
     pk_estimate_formula_items,
     pk_profile_from_descriptors,
+    predict_pd_targets_from_smiles,
     predict_pk_from_descriptors,
     report_row_limit,
     simulate_active_metabolite_curves,
@@ -313,6 +317,136 @@ class PharmacokineticPredictionTests(unittest.TestCase):
 
         self.assertIn("Morphine", df.loc[0, "Active metabolite(s)"])
         self.assertIn("CYP2D6", df.loc[0, "Main pathway"])
+
+
+class PredictedPharmacodynamicTargetTests(unittest.TestCase):
+    def test_target_prediction_table_sorts_and_filters_human_targets(self):
+        df = build_pd_target_prediction_df(
+            scores=[0.10, 0.95, 0.70],
+            target_ids=["CHEMBL1", "CHEMBL2", "CHEMBL3"],
+            target_metadata={
+                "CHEMBL1": {
+                    "pref_name": "Low-scoring human target",
+                    "organism": "Homo sapiens",
+                    "target_type": "SINGLE PROTEIN",
+                },
+                "CHEMBL2": {
+                    "pref_name": "High-scoring mouse target",
+                    "organism": "Mus musculus",
+                    "target_type": "SINGLE PROTEIN",
+                },
+                "CHEMBL3": {
+                    "pref_name": "Mid-scoring human target",
+                    "organism": "Homo sapiens",
+                    "target_type": "SINGLE PROTEIN",
+                },
+            },
+            top_n=2,
+            human_only=True,
+        )
+
+        self.assertEqual(list(df["Target ChEMBL ID"]), ["CHEMBL3", "CHEMBL1"])
+        self.assertEqual(list(df["Rank"]), [1, 2])
+        self.assertEqual(list(df["Prediction Score"]), [0.7, 0.1])
+        self.assertTrue((df["Organism"] == "Homo sapiens").all())
+        self.assertIn("not activity direction", df.loc[0, "Evidence / limitation"])
+
+    def test_target_prediction_threshold_and_row_limit(self):
+        df = build_pd_target_prediction_df(
+            scores=[0.90, 0.80, 0.30],
+            target_ids=["CHEMBL1", "CHEMBL2", "CHEMBL3"],
+            target_metadata={
+                target_id: {
+                    "pref_name": target_id,
+                    "organism": "Homo sapiens",
+                    "target_type": "SINGLE PROTEIN",
+                }
+                for target_id in ["CHEMBL1", "CHEMBL2", "CHEMBL3"]
+            },
+            top_n=1,
+            min_score=0.5,
+        )
+
+        self.assertEqual(list(df["Target ChEMBL ID"]), ["CHEMBL1"])
+        self.assertEqual(df.loc[0, "Prediction Score"], 0.9)
+
+    def test_target_prediction_keeps_unknown_metadata_with_human_filter(self):
+        df = build_pd_target_prediction_df(
+            scores=[0.90],
+            target_ids=["CHEMBL1"],
+            target_metadata={},
+            human_only=True,
+        )
+
+        self.assertEqual(df.loc[0, "Organism"], "Unknown")
+        self.assertIn("not confirmed", df.loc[0, "Evidence / limitation"])
+
+    def test_target_prediction_rejects_score_target_mismatch(self):
+        with self.assertRaisesRegex(ValueError, "score count"):
+            build_pd_target_prediction_df(
+                scores=[0.10, 0.20],
+                target_ids=["CHEMBL1"],
+            )
+
+    def test_predict_target_helper_prefers_onnx_output_names(self):
+        class Node:
+            def __init__(self, name):
+                self.name = name
+
+        class FakeSession:
+            def get_inputs(self):
+                return [Node("input")]
+
+            def get_outputs(self):
+                return [Node("CHEMBL_OUT_LOW"), Node("CHEMBL_OUT_HIGH")]
+
+            def run(self, _outputs, _inputs):
+                return [
+                    np.array([0.10], dtype=np.float32),
+                    np.array([0.90], dtype=np.float32),
+                ]
+
+        metadata = {
+            "CHEMBL_OUT_LOW": {
+                "pref_name": "Low target",
+                "organism": "Homo sapiens",
+                "target_type": "SINGLE PROTEIN",
+            },
+            "CHEMBL_OUT_HIGH": {
+                "pref_name": "High target",
+                "organism": "Homo sapiens",
+                "target_type": "SINGLE PROTEIN",
+            },
+        }
+
+        with (
+            mock.patch(
+                "chembl_bioactivity_enhanced.ensure_chembl_multitask_assets",
+                return_value={"model": "fake.onnx"},
+            ),
+            mock.patch(
+                "chembl_bioactivity_enhanced.load_chembl_multitask_targets",
+                return_value=["CHEMBL_JSON_LOW", "CHEMBL_JSON_HIGH"],
+            ),
+            mock.patch(
+                "chembl_bioactivity_enhanced._chembl_multitask_session",
+                return_value=FakeSession(),
+            ),
+            mock.patch(
+                "chembl_bioactivity_enhanced._chembl_multitask_fingerprint",
+                return_value=np.zeros(1024, dtype=np.float32),
+            ),
+            mock.patch(
+                "chembl_bioactivity_enhanced.fetch_chembl_target_metadata",
+                return_value=metadata,
+            ),
+        ):
+            df = predict_pd_targets_from_smiles("CCO", top_n=2)
+
+        self.assertEqual(
+            list(df["Target ChEMBL ID"]),
+            ["CHEMBL_OUT_HIGH", "CHEMBL_OUT_LOW"],
+        )
 
 
 class ActivityCleanupTests(unittest.TestCase):

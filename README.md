@@ -1,7 +1,8 @@
-# ChEMBL Bioactivity and Predicted Pharmacokinetics
+# ChEMBL Bioactivity, Predicted Pharmacokinetics, and Target Hypotheses
 
 Interactive Voila app for exploring molecule bioactivity, PubChem descriptors,
-and transparent structure-based pharmacokinetic estimates.
+transparent structure-based pharmacokinetic estimates, and predicted
+pharmacodynamic target/off-target hypotheses.
 
 The app is designed for hypothesis generation and teaching. It is **not** a
 clinical dosing, prescribing, or safety tool.
@@ -24,6 +25,8 @@ clinical dosing, prescribing, or safety tool.
 - Can average repeated target/activity bioactivity rows after nM normalization,
   with optional standard-deviation clipping.
 - Resolves PubChem CID and computed descriptors.
+- Predicts likely ChEMBL protein targets/off-targets from SMILES using the
+  ChEMBL multitask ONNX model.
 - Estimates structure-based ADME/PK properties from descriptors.
 - Simulates concentration-time curves by route and dose.
 - Estimates MEC/MTC from optional reference active/toxic doses.
@@ -47,6 +50,23 @@ The route simulator uses a one-compartment model with first-order absorption for
 oral, sublingual, intranasal, and subcutaneous routes, and IV bolus kinetics for
 intravenous route. It assumes a healthy 70 kg young adult unless changed in the
 UI, normal renal/CYP activity, and no major enzyme inhibitors or inducers.
+
+## Predicted Pharmacodynamics / Target Hypotheses
+
+The predicted pharmacodynamics section ranks possible ChEMBL targets and
+off-targets from a molecule SMILES string. It uses ChEMBL's ligand-based
+multitask model exported to ONNX, with RDKit Morgan fingerprints as input.
+
+This is a target-hypothesis layer, not a mechanistic pharmacodynamic simulator.
+The scores do not infer agonism, antagonism, partial agonism, inverse agonism,
+functional efficacy, tissue response, tolerance, clinical effect, therapeutic
+index, or safety. Treat high-ranking targets as hypotheses to check against
+observed assay data, literature, and target biology.
+
+The `Exclude non-human` control removes targets that resolve to a non-human
+organism in ChEMBL metadata. If ChEMBL target metadata is unavailable, the app
+keeps the ranked ChEMBL target ID and marks the organism as unknown rather than
+silently discarding the prediction.
 
 ## MEC/MTC Calibration
 
@@ -127,7 +147,8 @@ conda-forge.
 ```bash
 micromamba create -n chembl-pk -c conda-forge \
   python=3.11 rdkit numpy pandas matplotlib jupyterlab ipykernel ipywidgets \
-  itables pillow openpyxl reportlab voila requests pubchempy py3Dmol tabulate -y
+  itables onnxruntime pillow openpyxl reportlab voila requests pubchempy \
+  py3Dmol tabulate -y
 
 micromamba activate chembl-pk
 python -m ipykernel install --user --name chembl-pk --display-name "Python (chembl-pk)"
@@ -162,6 +183,7 @@ python -m unittest discover -s tests
 ## Data Sources
 
 - ChEMBL: human target bioactivity data.
+- ChEMBL multitask model: ligand-based target/off-target hypotheses from SMILES.
 - PubChem: compound identifiers, structure, descriptors, images, and optional property scraping.
 - RDKit: local descriptor calculation and 2D structure rendering when available.
 

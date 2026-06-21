@@ -33,6 +33,7 @@ import requests
 from IPython.display import HTML, Image, Markdown, clear_output, display
 
 from chembl_bioactivity_enhanced import (
+    PD_TARGET_PREDICTION_NOTE,
     PK_ESTIMATE_NOTE,
     PK_SIMULATION_NOTE,
     active_metabolite_notes_for_compound,
@@ -48,6 +49,7 @@ from chembl_bioactivity_enhanced import (
     pk_estimate_formula_items,
     pk_formula_items,
     pk_profile_from_descriptors,
+    predict_pd_targets_from_smiles,
     predict_pk_from_descriptors,
     report_row_limit,
     simulate_active_metabolite_curves,
@@ -972,6 +974,30 @@ def interactive_mode():
         style={"description_width": "initial"},
         layout=widgets.Layout(width="380px"),
     )
+    predict_targets = widgets.Checkbox(
+        value=True,
+        description="Predict targets",
+        indent=False,
+        layout=widgets.Layout(width="180px"),
+    )
+    target_top_n = widgets.Dropdown(
+        options=[
+            ("10 targets", 10),
+            ("25 targets", 25),
+            ("50 targets", 50),
+            ("100 targets", 100),
+        ],
+        value=25,
+        description="Target rows:",
+        style={"description_width": "initial"},
+        layout=widgets.Layout(width="220px"),
+    )
+    target_human_only = widgets.Checkbox(
+        value=True,
+        description="Exclude non-human",
+        indent=False,
+        layout=widgets.Layout(width="210px"),
+    )
     show_3d = widgets.Checkbox(
         value=False,
         description="Fetch 3D structure (slower)",
@@ -1002,6 +1028,7 @@ def interactive_mode():
             ),
             widgets.HBox([ref_active_dose, ref_toxic_dose, ref_dose_unit, ref_route]),
             ref_cmax_fraction,
+            widgets.HBox([predict_targets, target_top_n, target_human_only]),
             widgets.HBox([show_3d, show_pubchem_props]),
             widgets.HTML(
                 "<em>MEC/MTC are optional thresholds in mg/L. If left as 0, a minimum active/toxic reference dose estimates them as: threshold = Ref Cmax fraction × predicted Cmax for that reference dose and route. Example: 0.50 means half of the predicted reference-dose peak.</em>"
@@ -1134,6 +1161,72 @@ def interactive_mode():
                 or descriptors.get("IsomericSMILES")
                 or descriptors.get("CanonicalSMILES")
             )
+
+            if predict_targets.value:
+                display(
+                    Markdown(
+                        "#### Predicted Pharmacodynamics: Target Hypotheses"
+                    )
+                )
+                if not smiles:
+                    display(
+                        Markdown(
+                            "> Predicted target hypotheses unavailable because no SMILES string was available."
+                        )
+                    )
+                else:
+                    try:
+                        df_targets = predict_pd_targets_from_smiles(
+                            smiles,
+                            top_n=target_top_n.value,
+                            human_only=target_human_only.value,
+                        )
+                        if df_targets.empty:
+                            display(
+                                Markdown(
+                                    "> No predicted targets passed the current filters."
+                                )
+                            )
+                        else:
+                            show(
+                                df_targets,
+                                classes="display compact cell-border",
+                                maxBytes=0,
+                                pageLength=datatable_page_length,
+                            )
+                            report_sections.append(
+                                {
+                                    "title": "Predicted Pharmacodynamics: Target Hypotheses",
+                                    "df": df_targets,
+                                    "note": PD_TARGET_PREDICTION_NOTE,
+                                }
+                            )
+                            display(
+                                HTML(
+                                    make_download_link(
+                                        df_targets,
+                                        "predicted_target_hypotheses.csv",
+                                        "csv",
+                                        sep=sep_choice.value,
+                                    )
+                                )
+                            )
+                            display(
+                                HTML(
+                                    make_download_link(
+                                        df_targets,
+                                        "predicted_target_hypotheses.xlsx",
+                                        "xlsx",
+                                    )
+                                )
+                            )
+                        display(Markdown(f"> {PD_TARGET_PREDICTION_NOTE}"))
+                    except Exception as e:
+                        display(
+                            Markdown(
+                                f"> Predicted target hypotheses unavailable: {e}"
+                            )
+                        )
 
             display(Markdown("#### Predicted Pharmacokinetics (structure-based)"))
             df_pk = pk_profile_from_descriptors(descriptors, label=f"PubChem CID {cid}")
